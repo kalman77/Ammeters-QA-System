@@ -58,6 +58,9 @@ class CleanArchitectureTests(unittest.TestCase):
     def test_each_dataclass_has_a_dedicated_module(self) -> None:
         modules = {
             "src/domain/models/ammeter_settings.py": "AmmeterSettings",
+            (
+                "src/domain/models/current_statistics.py"
+            ): "CurrentStatistics",
             "src/domain/models/measurement.py": "Measurement",
             "src/domain/models/measurement_error.py": "MeasurementError",
             (
@@ -66,6 +69,9 @@ class CleanArchitectureTests(unittest.TestCase):
             "src/domain/models/network_settings.py": "NetworkSettings",
             "src/domain/models/runtime_settings.py": "RuntimeSettings",
             "src/domain/models/sample_result.py": "SampleResult",
+            (
+                "src/domain/models/sampling_analysis.py"
+            ): "SamplingAnalysis",
             "src/domain/models/sampling_result.py": "SamplingResult",
             "src/domain/models/sampling_settings.py": "SamplingSettings",
             (
@@ -113,6 +119,13 @@ class CleanArchitectureTests(unittest.TestCase):
                 "src/infrastructure/emulators/stop_emulators.py"
             ): "stop_emulators",
             (
+                "src/application/use_cases/analyze_sampling_result.py"
+            ): "analyze_sampling_result",
+            (
+                "src/domain/services/"
+                "calculate_current_statistics.py"
+            ): "calculate_current_statistics",
+            (
                 "src/application/use_cases/run_ammeter_smoke_test.py"
             ): "run_ammeter_smoke_test",
             (
@@ -158,12 +171,19 @@ class CleanArchitectureTests(unittest.TestCase):
                 "src/infrastructure/time/sleep_for_seconds.py"
             ): "sleep_for_seconds",
             (
+                "src/presentation/console/"
+                "format_analysis_results_table.py"
+            ): "format_analysis_results_table",
+            (
                 "src/presentation/console/format_measurements_table.py"
             ): "format_measurements_table",
             (
                 "src/presentation/console/"
                 "format_measurement_results_table.py"
             ): "format_measurement_results_table",
+            (
+                "src/presentation/console/print_analysis_results.py"
+            ): "print_analysis_results",
             (
                 "src/presentation/console/print_measurements.py"
             ): "print_measurements",
@@ -180,6 +200,10 @@ class CleanArchitectureTests(unittest.TestCase):
                 "src/presentation/serialization/"
                 "measurement_result_to_dict.py"
             ): "measurement_result_to_dict",
+            (
+                "src/presentation/serialization/"
+                "sampling_analysis_to_dict.py"
+            ): "sampling_analysis_to_dict",
             (
                 "src/presentation/serialization/"
                 "sampling_result_to_dict.py"
