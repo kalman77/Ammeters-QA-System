@@ -1,20 +1,15 @@
+from src.presentation.console.print_measurement_results import (
+    print_measurement_results,
+)
 from src.testing.test_framework import AmmeterTestFramework
 
-def main():
-    # יצירת מסגרת הבדיקות
+
+def main() -> None:
+    """Run one typed measurement for every configured ammeter."""
     framework = AmmeterTestFramework()
-    
-    # הרצת בדיקות לכל סוגי האמפרמטרים
-    ammeter_types = ["greenlee", "entes", "circutor"]
-    results = {}
-    
-    for ammeter_type in ammeter_types:
-        print(f"Testing {ammeter_type} ammeter...")
-        results[ammeter_type] = framework.run_test(ammeter_type)
-        
-    # השוואת תוצאות
-    for ammeter_type, result in results.items():
-        print(f"\nResults for {ammeter_type}:")
+    results = framework.measure_all()
+    print_measurement_results(results.values())
+
 
 if __name__ == "__main__":
     main()
