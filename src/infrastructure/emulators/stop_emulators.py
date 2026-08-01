@@ -1,6 +1,7 @@
 import threading
 from typing import Sequence
 
+from src.application.errors.emulator_stop_error import EmulatorStopError
 from src.infrastructure.emulators.join_emulator_threads import (
     join_emulator_threads,
 )
@@ -20,4 +21,6 @@ def stop_emulators(
     )
     if still_running:
         names = ", ".join(still_running)
-        raise RuntimeError(f"Emulator threads did not stop cleanly: {names}")
+        raise EmulatorStopError(
+            f"Emulator threads did not stop cleanly: {names}"
+        )

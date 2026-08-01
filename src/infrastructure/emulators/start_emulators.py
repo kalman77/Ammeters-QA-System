@@ -3,6 +3,7 @@ import time
 from typing import List, Mapping, Type
 
 from Ammeters.base_ammeter import AmmeterEmulatorBase
+from src.application.errors.emulator_start_error import EmulatorStartError
 from src.domain.models.runtime_settings import RuntimeSettings
 from src.infrastructure.emulators.join_emulator_threads import (
     join_emulator_threads,
@@ -54,12 +55,12 @@ def start_emulators(
                 remaining <= 0
                 or not running_emulator.ready_event.wait(remaining)
             ):
-                raise RuntimeError(
+                raise EmulatorStartError(
                     f"Timed out starting the "
                     f"{running_emulator.settings.name} emulator"
                 )
             if running_emulator.startup_error is not None:
-                raise RuntimeError(
+                raise EmulatorStartError(
                     f"Unable to start the "
                     f"{running_emulator.settings.name} emulator: "
                     f"{running_emulator.startup_error}"
@@ -73,9 +74,16 @@ def start_emulators(
         )
         if still_running:
             names = ", ".join(still_running)
-            raise RuntimeError(
+            raise EmulatorStartError(
                 f"Emulator startup failed and cleanup could not stop: {names}"
             ) from startup_error
-        raise
+        if isinstance(
+            startup_error,
+            (KeyboardInterrupt, SystemExit, ValueError, EmulatorStartError),
+        ):
+            raise
+        raise EmulatorStartError(
+            f"Unable to start emulator group: {startup_error}"
+        ) from startup_error
 
     return running_emulators
