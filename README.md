@@ -148,12 +148,105 @@ python -m examples.run_tests
 The example calls `measure_all()` and prints the typed results, including status,
 latency, and structured error details.
 
-### Sampling scope
+### Phase 2 boundary
 
-Phase 2 performs exactly one measurement request for each selected ammeter.
-The `testing.sampling` placeholders in `config/config.yaml` are intentionally
-not consumed yet. Measurement count, total duration, sampling frequency, and
-precise sampling schedules are deferred explicitly to Phase 3.
+The Phase 2 methods perform exactly one measurement request for each selected
+ammeter. They remain available unchanged alongside the Phase 3 sampling API.
+
+## Precise sampling (Phase 3)
+
+`sample()` runs a fixed sampling window for one ammeter and returns an immutable
+`SamplingResult`. `sample_all()` applies the same resolved schedule to every
+configured ammeter:
+
+```python
+framework = AmmeterTestFramework()
+
+result = framework.sample("greenlee")
+results_by_ammeter = framework.sample_all()
+```
+
+Sampling uses `measurements_count` (`N`), `total_duration_seconds` (`D`), and
+`sampling_frequency_hz` (`F`). Configure any two values and the framework
+derives the third. If all three are supplied, they must satisfy:
+
+```text
+N = D * F
+```
+
+The schedule is a half-open window `[0, D)`. Sample `i` targets `i / F`, so the
+default `N=5`, `D=1.0`, `F=5.0` configuration targets `0.0`, `0.2`, `0.4`,
+`0.6`, and `0.8` seconds. When `D` and `F` derive `N`, their product must be a
+whole number.
+
+Sampling settings are read lazily. Constructing the framework and using the
+Phase 2 APIs does not require a sampling section. The
+`framework.sampling_settings` property resolves the YAML values on demand.
+
+Callers may override the YAML values for one call:
+
+```python
+result = framework.sample(
+    "greenlee",
+    measurements_count=10,
+    sampling_frequency_hz=5.0,
+)
+```
+
+Providing any override selects explicit-override mode; override values are not
+merged with YAML. Supply at least two explicit values, and the third is derived.
+Invalid, incomplete, non-positive, non-finite, fractional-count, or inconsistent
+settings raise `SamplingConfigurationError`.
+
+To prevent accidental unbounded runs, one sampling call is limited to 100,000
+slots, 24 hours, and 10,000 Hz. Values beyond those limits are rejected before
+an emulator starts.
+
+`run_sampling_test()` returns one JSON-friendly sampling dictionary.
+`run_all_sampling_tests()` returns serialized sampling results for every
+ammeter. Each dictionary includes the resolved settings, successful/failed/missed
+counts, per-slot scheduled and actual timing, timing error, nested measurement
+results, and lifecycle errors.
+
+### Fixed deadlines and missed slots
+
+Every target is anchored to one monotonic start time, so request latency does not
+accumulate as schedule drift. Each slot occupies
+`[i / F, (i + 1) / F)`.
+
+If an earlier request is slow and a later slot is at or beyond its end before
+it can start, that slot is recorded as a failed sample with
+`sampling_slot_missed`. No late catch-up request or retry is issued. A request
+that starts inside its slot still owns that slot even if it completes late.
+Consequently, every started run contains exactly `N` slot results while its
+duration remains bounded by the configured window plus completion of at most the
+final in-flight request and shutdown.
+
+Sampling status follows the existing result vocabulary:
+
+| Status | Meaning |
+|---|---|
+| `success` | Every slot contains a valid measurement and no lifecycle error occurred |
+| `partial` | At least one slot succeeded and at least one slot or lifecycle operation failed |
+| `failed` | No usable measurement was collected |
+
+### Run the sampling example
+
+From the project root:
+
+```sh
+python -m examples.run_sampling
+```
+
+The example samples every configured ammeter and prints a summary containing
+good/total slots, missed slots, configured and actual window duration, frequency,
+maximum observed drift, and error codes.
+
+### Phase 3 boundary
+
+Phase 3 records raw measurements and timing/error metadata but does not calculate
+mean, median, standard deviation, minimum, or maximum. Statistical analysis and
+its reporting are deferred explicitly to Phase 4.
 
 ## Configured protocols
 
@@ -169,25 +262,39 @@ The same configuration file defines connection, read, startup, and shutdown
 timeouts. Port `0` may be used in test configurations to let the operating
 system choose a free port.
 
+It also defines the default sampling window:
+
+```yaml
+testing:
+  sampling:
+    measurements_count: 5
+    total_duration_seconds: 1.0
+    sampling_frequency_hz: 5.0
+```
+
+Any two sampling values are sufficient; setting the derived value to `NULL` is
+valid.
+
 ## Project structure
 
 - `main.py`: thin public entry point and CLI exception boundary
-- `src/domain/models/`: immutable settings and typed measurement results, one
-  dataclass per module
+- `src/domain/models/`: immutable settings, measurement results, and sampling
+  results, one dataclass per module
 - `src/application/ports/`: dependency contracts used by application logic
-- `src/application/use_cases/`: selection, validation, and measurement workflows
+- `src/application/use_cases/`: selection, validation, measurement, and
+  fixed-deadline sampling workflows
 - `src/application/errors/`: typed selector, configuration, and operational
   errors
 - `src/infrastructure/config/`: YAML loading and configuration resolution
 - `src/infrastructure/emulators/`: registry and lifecycle adapters, one
   operation per module
 - `src/infrastructure/clients/`: measurement transport adapters
-- `src/infrastructure/time/`: UTC and monotonic clock adapters
+- `src/infrastructure/time/`: UTC, monotonic clock, and sleep adapters
 - `src/bootstrap/`: dependency composition
-- `src/presentation/console/`: smoke-test and typed-result table formatting
+- `src/presentation/console/`: smoke-test, typed-result, and sampling tables
 - `src/presentation/serialization/`: JSON-friendly result serialization
 - `Ammeters/`: existing emulator and socket infrastructure adapters
-- `config/config.yaml`: runtime and future test-framework configuration
+- `config/config.yaml`: runtime and sampling configuration
 - `src/testing/`: public `AmmeterTestFramework` facade
 - `examples/`: framework usage examples
 - `tests/`: behavioral and architecture regression tests
@@ -226,6 +333,16 @@ decisions.
   latency.
 - Added typed-result console presentation and a runnable module example.
 - Kept sampling mechanics deferred to Phase 3.
+
+## Phase 3 additions
+
+- Added configuration-driven and per-call sampling with two-of-three value
+  derivation.
+- Added immutable per-slot and aggregate sampling results.
+- Added drift-resistant monotonic scheduling and explicit missed-slot reporting.
+- Added typed and JSON-friendly single/all sampling APIs.
+- Added a sampling summary table and runnable module example.
+- Kept statistical analysis deferred to Phase 4.
 
 ## Run tests
 
