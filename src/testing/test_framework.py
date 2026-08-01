@@ -1,5 +1,6 @@
 from functools import partial
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, Mapping, Optional, Tuple, Type, Union
 
 from Ammeters.base_ammeter import AmmeterEmulatorBase
@@ -52,6 +53,10 @@ from src.presentation.serialization.sampling_analysis_to_dict import (
 from src.presentation.serialization.sampling_result_to_dict import (
     sampling_result_to_dict,
 )
+from src.testing.ammeter_result_manager import AmmeterResultManager
+from src.testing.build_ammeter_result_manager import (
+    build_ammeter_result_manager,
+)
 from src.testing.resolve_framework_sampling_settings import (
     resolve_framework_sampling_settings,
 )
@@ -73,6 +78,7 @@ class AmmeterTestFramework:
         monotonic_clock: Optional[MonotonicClock] = None,
         utc_clock: Optional[UtcClock] = None,
         sleeper: Optional[Sleeper] = None,
+        result_manager: Optional[AmmeterResultManager] = None,
     ):
         registry = (
             EMULATOR_REGISTRY
@@ -80,12 +86,13 @@ class AmmeterTestFramework:
             else emulator_registry
         )
         try:
-            self.config = load_yaml_config(config_path)
+            self._config_path = Path(config_path).absolute()
+            self.config = load_yaml_config(self._config_path)
             self._runtime_settings = resolve_runtime_settings(
                 self.config,
                 registry.keys(),
             )
-        except (OSError, ValueError) as exc:
+        except (OSError, TypeError, ValueError) as exc:
             raise FrameworkConfigurationError(
                 f"Unable to initialize the ammeter framework: {exc}"
             ) from exc
@@ -101,6 +108,21 @@ class AmmeterTestFramework:
         self._monotonic_clock = monotonic_clock or read_monotonic_time
         self._utc_clock = utc_clock or read_utc_time
         self._sleeper = sleeper or sleep_for_seconds
+        self._result_manager = result_manager
+        self._result_manager_lock = Lock()
+
+    @property
+    def results(self) -> AmmeterResultManager:
+        """Resolve and cache the Phase 5 result-management facade lazily."""
+        if self._result_manager is None:
+            with self._result_manager_lock:
+                if self._result_manager is None:
+                    self._result_manager = build_ammeter_result_manager(
+                        self.config,
+                        self._config_path,
+                        self._utc_clock,
+                    )
+        return self._result_manager
 
     @property
     def ammeter_types(self) -> Tuple[str, ...]:

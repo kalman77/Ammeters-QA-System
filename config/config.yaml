@@ -29,3 +29,4 @@ analysis:
     plot_types:
 
 result_management:
+  archive_directory: "../results"
