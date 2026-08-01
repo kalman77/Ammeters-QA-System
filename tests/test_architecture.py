@@ -58,6 +58,11 @@ class CleanArchitectureTests(unittest.TestCase):
     def test_each_dataclass_has_a_dedicated_module(self) -> None:
         modules = {
             "src/domain/models/ammeter_settings.py": "AmmeterSettings",
+            "src/domain/models/measurement.py": "Measurement",
+            "src/domain/models/measurement_error.py": "MeasurementError",
+            (
+                "src/domain/models/measurement_result.py"
+            ): "MeasurementResult",
             "src/domain/models/network_settings.py": "NetworkSettings",
             "src/domain/models/runtime_settings.py": "RuntimeSettings",
             (
@@ -108,11 +113,46 @@ class CleanArchitectureTests(unittest.TestCase):
                 "src/application/use_cases/run_ammeter_smoke_test.py"
             ): "run_ammeter_smoke_test",
             (
+                "src/application/use_cases/measure_running_ammeter.py"
+            ): "measure_running_ammeter",
+            (
+                "src/application/use_cases/normalize_ammeter_type.py"
+            ): "normalize_ammeter_type",
+            (
+                "src/application/use_cases/run_single_ammeter_test.py"
+            ): "run_single_ammeter_test",
+            (
+                "src/application/use_cases/select_ammeter_settings.py"
+            ): "select_ammeter_settings",
+            (
+                "src/application/use_cases/validate_current.py"
+            ): "validate_current",
+            (
+                "src/infrastructure/clients/read_ammeter_current.py"
+            ): "read_ammeter_current",
+            (
+                "src/infrastructure/time/read_monotonic_time.py"
+            ): "read_monotonic_time",
+            (
+                "src/infrastructure/time/read_utc_time.py"
+            ): "read_utc_time",
+            (
                 "src/presentation/console/format_measurements_table.py"
             ): "format_measurements_table",
             (
+                "src/presentation/console/"
+                "format_measurement_results_table.py"
+            ): "format_measurement_results_table",
+            (
                 "src/presentation/console/print_measurements.py"
             ): "print_measurements",
+            (
+                "src/presentation/console/print_measurement_results.py"
+            ): "print_measurement_results",
+            (
+                "src/presentation/serialization/"
+                "measurement_result_to_dict.py"
+            ): "measurement_result_to_dict",
             "src/bootstrap/run_application.py": "run_application",
         }
 
