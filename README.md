@@ -36,7 +36,8 @@ python -m pip install -r requirements.txt
 Phase 1 was verified with Python 3.14.6 and PyYAML 6.0.3. No other external
 libraries are required or were installed. Phase 4 statistical analysis uses
 Python's standard-library `statistics` module, so it does not add NumPy, SciPy,
-pandas, or another runtime dependency.
+pandas, or another runtime dependency. Phase 5 persistence likewise uses only
+standard-library UUID, JSON, temporary-file, and filesystem support.
 
 ## Run the emulator smoke test
 
@@ -351,6 +352,168 @@ and are deliberately deferred. Unique run identifiers, metadata archives,
 historical retrieval, and result comparison belong to Phase 5 result management
 and are not part of this phase.
 
+## Result management (Phase 5)
+
+Phase 5 adds an append-only archive for completed `SamplingAnalysis` values.
+The result-management API is exposed lazily through `framework.results`, so
+constructing the framework or using any Phase 1 through Phase 4 method does not
+touch the filesystem or require result-management configuration.
+
+```python
+from datetime import datetime, timezone
+
+from src.testing.test_framework import AmmeterTestFramework
+
+framework = AmmeterTestFramework()
+analysis = framework.analyze("greenlee")
+
+archived = framework.results.archive(
+    analysis,
+    metadata={
+        "operator": "Nir",
+        "board": "prototype-a",
+        "ambient_temperature_c": 24.5,
+    },
+)
+
+same_run = framework.results.get(archived.run_id)
+recent_greenlee_runs = framework.results.find(
+    ammeter_type="greenlee",
+    archived_from_utc=datetime(2026, 8, 1, tzinfo=timezone.utc),
+    has_statistics=True,
+    limit=10,
+)
+```
+
+`archive()` returns an immutable `ArchivedTestRun` containing a canonical UUID,
+a timezone-aware UTC archive timestamp, deterministically ordered metadata, and
+the complete analysis. Metadata values are restricted to JSON scalars: strings,
+booleans, integers, finite floats, and `None`. The original sampling settings,
+samples, timing, status, errors, and derived statistics therefore remain
+attached to the archived run.
+
+One run accepts at most 50 metadata entries. Keys must be trimmed strings no
+longer than 64 characters, and string values are limited to 1,024 characters.
+
+`archive_all()` archives a mapping of analyses in its existing order and
+returns one independently identified archive per ammeter:
+
+```python
+analyses = framework.analyze_all()
+archived_by_ammeter = framework.results.archive_all(
+    analyses,
+    metadata={"test_campaign": "power-board-regression"},
+)
+```
+
+Each archive is a separate append-only operation; the method does not claim
+batch-transaction semantics. A completed earlier write remains durable if a
+later archive fails.
+
+### Retrieval and filtering
+
+`get(run_id)` validates a canonical UUID and retrieves exactly one typed run.
+`find()` returns complete typed archives newest-first and supports these
+optional filters:
+
+- ammeter type;
+- result status (`success`, `partial`, or `failed`);
+- archive time range;
+- exact metadata key/value matches;
+- presence or absence of calculated statistics;
+- result limit.
+
+Archive time filtering uses the half-open range
+`[archived_from_utc, archived_until_utc)`. All supplied metadata entries must
+match, while an omitted filter leaves that property unrestricted. A missing
+archive directory represents an empty history for `find()`; `get()` still
+reports a typed not-found error for an absent run ID. A query limit is capped at
+10,000 runs.
+
+### Historical comparison
+
+`compare()` accepts one baseline ID and one or more distinct candidate IDs:
+
+```python
+baseline_run = archived
+candidate_run = framework.results.archive(
+    framework.analyze("greenlee"),
+    metadata={"board": "prototype-a", "iteration": 2},
+)
+comparison = framework.results.compare(
+    baseline_run.run_id,
+    (candidate_run.run_id,),
+)
+```
+
+Every numeric delta is defined as:
+
+```text
+candidate value - baseline value
+```
+
+The comparison covers successful-measurement count, mean, median, population
+standard deviation, minimum, and maximum. A candidate has
+`statistics_delta=None` when it or the baseline has no usable statistics.
+`same_ammeter_type` and `same_sampling_settings` are reported explicitly so a
+caller can identify unlike runs.
+
+This comparison is descriptive. It does not infer a true current, rank ammeter
+accuracy, or declare one measurement method more reliable. Those decisions
+belong to the separate accuracy-assessment bonus work.
+
+Run the complete archive/list/compare example with:
+
+```sh
+python -m examples.run_result_management
+```
+
+It prints one aligned archive-history table and one baseline/candidate
+comparison table. Running it creates two new append-only records in the
+configured archive.
+
+### Durable JSON archive
+
+The default adapter stores one versioned UTF-8 JSON document per run, named
+with its UUID. Documents include `schema_version: 1`, identity, archive time,
+metadata, and the full serialized Phase 4 analysis. Writes use a temporary file
+in the archive directory, flush it before installation, and publish with an
+atomic no-overwrite filesystem operation. POSIX filesystems therefore need
+same-directory hard-link support; Windows uses its atomic no-replace rename
+semantics. An unsupported filesystem reports a typed storage error rather than
+falling back to a clobber-prone write. Existing run IDs are never overwritten.
+Temporary files are excluded from listing and cleaned up after failed writes.
+Paths and publication use standard-library APIs rather than shell commands or
+platform-specific path syntax.
+
+One archive document is limited to 256 MiB. The limit is checked before
+publication and again before decoding, bounding malformed or unexpectedly
+large historical input.
+
+Reads reconstruct the immutable domain models and recalculate derived analysis
+fields. Unsupported schema versions, malformed JSON, unexpected fields, and
+statistics that contradict the stored sampling result are reported as typed
+result-management errors instead of being silently accepted. Recalculated
+floating statistics allow only a small eight-ULP difference, which preserves
+Python 3.9/newer runtime compatibility without accepting materially different
+statistics.
+
+`archived_test_run_to_dict()` and `historical_comparison_to_dict()` provide
+JSON-friendly public representations when a caller does not need typed models.
+
+Caller mistakes such as invalid IDs, metadata, filters, or comparison sets raise
+typed validation errors. A missing run, ID collision, inaccessible archive,
+corrupt document, or unsupported schema raises a distinct result-management
+error. These failures are not converted into measurement statuses because they
+occur outside the ammeter run itself.
+
+### Phase 5 boundary
+
+Phase 5 completes unique run identification, metadata archiving, durable local
+storage, historical retrieval, and descriptive comparison. Visualization,
+performance-consistency evaluation, and relative-accuracy or reliability
+ranking remain optional bonus work.
+
 ## Configured protocols
 
 `config/config.yaml` is the runtime source of truth.
@@ -378,29 +541,47 @@ testing:
 Any two sampling values are sufficient; setting the derived value to `NULL` is
 valid.
 
+The result archive is configured separately:
+
+```yaml
+result_management:
+  archive_directory: "../results"
+```
+
+Relative archive paths are resolved from the directory containing the selected
+configuration file, not from the process working directory. The directory is
+created only when the first archive save is requested. Missing or invalid
+result-management configuration is resolved only when `framework.results` is
+requested, leaving all earlier APIs usable with legacy configuration files.
+
 ## Project structure
 
 - `main.py`: thin public entry point and CLI exception boundary
-- `src/domain/models/`: immutable settings, measurement/sampling results, and
-  statistical analyses, one dataclass per module
+- `src/domain/models/`: immutable settings, measurement/sampling results,
+  statistical analyses, archives, queries, and comparisons, one dataclass per
+  module
 - `src/application/ports/`: dependency contracts used by application logic
-- `src/application/use_cases/`: selection, validation, measurement, and
-  fixed-deadline sampling/statistical-analysis workflows
-- `src/application/errors/`: typed selector, configuration, and operational
-  errors
+- `src/application/use_cases/`: selection, validation, measurement,
+  fixed-deadline sampling, analysis, archival, retrieval, query, and comparison
+  workflows
+- `src/application/errors/`: typed selector, configuration, operational, and
+  result-management errors
 - `src/infrastructure/config/`: YAML loading and configuration resolution
 - `src/infrastructure/emulators/`: registry and lifecycle adapters, one
   operation per module
 - `src/infrastructure/clients/`: measurement transport adapters
 - `src/infrastructure/time/`: UTC, monotonic clock, and sleep adapters
+- `src/infrastructure/identifiers/`: canonical run-ID generation
+- `src/infrastructure/persistence/`: append-only versioned JSON archive adapters
+  and typed reconstruction
 - `src/bootstrap/`: dependency composition
-- `src/presentation/console/`: smoke-test, measurement, sampling, and analysis
-  tables
+- `src/presentation/console/`: smoke-test, measurement, sampling, analysis,
+  archive-history, and historical-comparison tables
 - `src/presentation/serialization/`: JSON-friendly measurement, sampling, and
-  analysis serialization
+  analysis/archive/comparison serialization
 - `Ammeters/`: existing emulator and socket infrastructure adapters
-- `config/config.yaml`: runtime and sampling configuration
-- `src/testing/`: public `AmmeterTestFramework` facade
+- `config/config.yaml`: runtime, sampling, and result-management configuration
+- `src/testing/`: public `AmmeterTestFramework` facade and lazy result manager
 - `examples/`: framework usage examples
 - `tests/`: behavioral and architecture regression tests
 
@@ -463,6 +644,20 @@ decisions.
   dependency was added.
 - Deferred visualization and performance-consistency bonus work, and kept
   archival/result management assigned to Phase 5.
+
+## Phase 5 additions
+
+- Added immutable archived-run, metadata, query, statistics-delta, and
+  historical-comparison contracts.
+- Added canonical UUID generation and complete versioned analysis provenance.
+- Added append-only atomic JSON storage with typed corruption, schema,
+  collision, and not-found errors.
+- Added lazy `framework.results` access with archive, archive-all, get, find,
+  and compare operations.
+- Added deterministic newest-first filtering by ammeter, status, half-open UTC
+  interval, metadata, statistics availability, and limit.
+- Defined every historical metric delta as candidate minus baseline and kept
+  accuracy/reliability ranking outside Phase 5.
 
 ## Run tests
 

@@ -1,6 +1,6 @@
 # Architecture
 
-The combined Phase 1 through Phase 4 implementation uses a small Clean
+The combined Phase 1 through Phase 5 implementation uses a small Clean
 Architecture–style separation.
 The goal is to keep policies and models independent from socket and YAML
 implementations and from console output while avoiding unnecessary framework
@@ -20,6 +20,10 @@ examples / API users
        -> measurement, sampling, and analysis use cases
        -> infrastructure adapters
        -> result serialization
+       -> lazy AmmeterResultManager
+            -> archive, retrieval, query, and comparison use cases
+            -> archive ports
+                 -> versioned JSON persistence adapters
 
 application
   -> domain models
@@ -38,21 +42,27 @@ The application layer imports neither `Ammeters` nor `src.infrastructure`.
 Instead, the bootstrap layer and public framework facade inject the emulator
 starter, emulator stopper, measurement client, monotonic clock, and UTC clock
 through application port protocols. Phase 3 also injects a sleeper, keeping
-wall-clock sleeping out of the fixed-deadline scheduling policy.
+wall-clock sleeping out of the fixed-deadline scheduling policy. Phase 5
+similarly injects run-ID generation and archive save/load/list ports, keeping
+UUID generation, paths, JSON, and filesystem operations out of application
+policies.
 
 ## Responsibilities
 
 | Layer | Responsibility |
 |---|---|
-| Domain | Immutable settings, measurements, sampling slots/results, statistical analyses, statuses, and error details |
-| Application | Normalize selectors, resolve sampling plans, validate readings, and execute measurement, sampling, and statistical-analysis use cases through abstract ports |
-| Infrastructure/config | Load YAML and extract runtime or sampling configuration |
+| Domain | Immutable settings, measurements, sampling slots/results, analyses, archived runs, archive queries, comparisons, statuses, and error details |
+| Application | Normalize selectors and archive inputs, resolve sampling/query plans, and execute measurement, sampling, analysis, archival, retrieval, and comparison use cases through abstract ports |
+| Infrastructure/config | Load YAML and lazily extract runtime, sampling, or result-management configuration |
 | Infrastructure/emulators | Register, start, monitor, join, and stop emulators |
 | Infrastructure/clients | Adapt socket-client failures to application errors |
 | Infrastructure/time | Provide monotonic and timezone-aware UTC clocks plus sleeping |
+| Infrastructure/identifiers | Generate canonical UUIDs for new archived runs |
+| Infrastructure/persistence | Atomically save, reconstruct, and list versioned append-only JSON archives |
 | Bootstrap | Select concrete adapters and compose dependencies |
-| Presentation | Format console tables and serialize typed results |
-| `AmmeterTestFramework` | Expose typed and serialized public APIs and compose their default adapters |
+| Presentation | Format console tables and serialize typed measurement, analysis, archive, and comparison values |
+| `AmmeterTestFramework` | Expose measurement/sampling/analysis APIs and lazily compose its result manager |
+| `AmmeterResultManager` | Expose typed archive, retrieval, filtering, and historical-comparison APIs |
 | `main.py` | Preserve the public entry point and CLI error boundary |
 
 ## File granularity
@@ -70,10 +80,15 @@ Each dataclass has its own module:
 - `SamplingResult`
 - `CurrentStatistics`
 - `SamplingAnalysis`
+- `RunMetadataEntry`
+- `ArchivedTestRun`
+- `ArchivedRunQuery`
+- `CurrentStatisticsDelta`
+- `HistoricalComparison`
 - `RunningEmulator`
 
-Each extracted Phase 2, Phase 3, or Phase 4 operation also has a dedicated
-module:
+Each extracted Phase 2, Phase 3, Phase 4, or Phase 5 operation also has a
+dedicated module:
 
 - YAML loading
 - Positive-number resolution
@@ -101,6 +116,14 @@ module:
 - Successful-sample analysis
 - Analysis-result formatting and printing
 - Analysis-result serialization
+- Run-ID normalization and generation
+- Archive metadata and query resolution
+- Single/all analysis archival
+- Archived-run retrieval and filtering
+- Current-statistics delta calculation
+- Historical comparison
+- Versioned archive encoding and typed reconstruction
+- Atomic archive saving, loading, and listing
 - Application composition
 
 Protocol classes are similarly separated under `src/application/ports`.
@@ -237,10 +260,98 @@ scope. Visualization and performance-consistency evaluation remain optional
 bonus work. Unique run identification, metadata archives, historical retrieval,
 and comparison are deferred to Phase 5 result management.
 
+## Phase 5 result-management contract
+
+One `ArchivedTestRun` represents one completed `SamplingAnalysis`. It combines
+the complete Phase 4 provenance with a canonical UUID, a timezone-aware UTC
+archive timestamp, and sorted immutable `RunMetadataEntry` values. Metadata is
+limited to JSON-safe scalars, allowing it to remain portable without embedding
+mutable application objects.
+
+The framework exposes result management through a lazy
+`AmmeterTestFramework.results` property. The property composes an
+`AmmeterResultManager` only when requested. Consequently:
+
+- Phase 1 through Phase 4 calls neither require archive configuration nor create
+  directories.
+- `result_management.archive_directory` is resolved only for result-management
+  use.
+- A relative archive path is based on the selected configuration file's parent
+  directory rather than the caller's working directory.
+- The archive directory itself is created only when the first save is requested.
+
+The manager delegates to dedicated application use cases:
+
+| Manager operation | Application behavior |
+|---|---|
+| `archive(analysis, metadata=...)` | Validate/copy metadata, generate an ID and UTC timestamp, save one immutable run |
+| `archive_all(analyses, metadata=...)` | Archive each mapping value sequentially in existing order with its own ID |
+| `get(run_id)` | Normalize a canonical UUID and retrieve the matching typed run |
+| `find(...)` | Resolve filters and return matching complete archives newest-first |
+| `compare(baseline_run_id, comparison_run_ids)` | Load distinct runs and create one typed baseline-to-candidates comparison |
+
+`ArchivedRunQuery` supports ammeter, status, archive time, metadata,
+statistics-presence, and limit filters. Its UTC time interval is half-open:
+`[archived_from_utc, archived_until_utc)`. Metadata matching is conjunctive, so
+every supplied key/value pair must be present. Results are ordered by archive
+time descending with a deterministic run-ID tie break.
+
+### Persistence boundary
+
+The default persistence adapter writes one UTF-8 JSON file named from the
+canonical UUID. The version-1 document contains the run envelope and the full
+serialized `SamplingAnalysis`, not merely its summary metrics. The adapter is
+append-only: an existing run ID produces a typed collision error and is never
+overwritten.
+
+Save operations write a temporary file inside the target archive directory,
+flush it, and atomically install it without replacing an existing destination.
+POSIX publication uses a same-directory hard link; Windows uses atomic
+no-replace rename behavior. Filesystems that support neither fail with a typed
+storage error instead of weakening append-only semantics. Temporary artifacts
+are not considered archives and are cleaned up after failures. A 256 MiB
+per-document limit bounds input before JSON decoding. Reads distinguish
+valid-but-missing IDs from inaccessible storage, malformed data, and unsupported
+schema versions.
+
+Deserialization reconstructs `MeasurementResult`, `SampleResult`,
+`SamplingResult`, and `SamplingAnalysis` domain values. Derived analysis data is
+recalculated and the reconstructed canonical document must match the stored
+document. This makes unexpected fields and statistics that contradict their raw
+samples explicit corruption instead of trusted historical data. Derived
+floating statistics permit only an eight-ULP difference so archives remain
+readable across supported Python runtimes whose standard-library rounding can
+differ by one ULP.
+
+Listing a directory that has not yet been created returns an empty history.
+Retrieving an absent canonical ID raises `ArchivedRunNotFoundError`. Files that
+are unrelated to the canonical UUID naming scheme and incomplete temporary
+files are ignored, while a malformed canonical archive is reported rather than
+silently skipped.
+
+### Historical comparison boundary
+
+`HistoricalComparison` contains one baseline and one or more distinct
+candidates. For every candidate, `CurrentStatisticsDelta` is calculated as:
+
+```text
+candidate - baseline
+```
+
+This applies to successful-measurement count, mean, median, population standard
+deviation, minimum, and maximum. When either side has `statistics=None`, the
+corresponding statistics delta is also `None`. Separate flags record whether
+the ammeter identity and sampling settings match.
+
+The comparison is intentionally descriptive. Phase 5 neither chooses a
+reference truth nor turns cross-ammeter differences into accuracy, precision,
+or reliability rankings. Visualization, performance consistency, and the
+accuracy-assessment bonus remain outside the result-management policy.
+
 ## Public and compatibility contracts
 
-The architecture retains the earlier interfaces and adds the Phase 3 sampling
-and Phase 4 analysis contracts:
+The architecture retains the earlier interfaces and adds the Phase 3 sampling,
+Phase 4 analysis, and Phase 5 result-management contracts:
 
 - `main.main(config_path=..., emit=...)`
 - `main.DEFAULT_CONFIG_PATH`
@@ -257,6 +368,13 @@ and Phase 4 analysis contracts:
   analyses
 - `AmmeterTestFramework.run_analysis()` and `run_all_analyses()` for
   JSON-friendly analysis dictionaries
+- `AmmeterTestFramework.results` for lazy `AmmeterResultManager` composition
+- `AmmeterResultManager.archive()` and `archive_all()` for typed persistence
+- `AmmeterResultManager.get()` and `find()` for typed historical retrieval
+- `AmmeterResultManager.compare()` for typed candidate-minus-baseline
+  comparison
+- `archived_test_run_to_dict()` and `historical_comparison_to_dict()` for
+  JSON-friendly Phase 5 output
 - Measurement order and console formatting
 - Startup, timeout, cleanup, and error-precedence behavior
 
@@ -270,8 +388,9 @@ application dependency direction.
 configuration, threading, socket, or concrete-emulator responsibilities again.
 It also verifies one dataclass/operation per selected module and prevents the
 application layer from importing infrastructure implementations. The checked
-module lists include the Phase 2/3/4 measurement, sampling, analysis,
-validation, timing, presentation, and serialization components. Dependency
-checks also keep domain models independent from outer layers and prevent
-application policies from importing infrastructure, presentation, bootstrap,
-framework, YAML, or system time implementations directly.
+module lists include the Phase 2/3/4/5 measurement, sampling, analysis, archive,
+query, comparison, validation, timing, persistence, presentation, and
+serialization components. Dependency checks also keep domain models independent
+from outer layers and prevent application policies from importing
+infrastructure, presentation, bootstrap, framework, YAML, JSON, filesystem,
+UUID-generation, or system time implementations directly.
