@@ -1,6 +1,6 @@
 # Architecture
 
-The combined Phase 1 through Phase 3 implementation uses a small Clean
+The combined Phase 1 through Phase 4 implementation uses a small Clean
 Architecture–style separation.
 The goal is to keep policies and models independent from socket and YAML
 implementations and from console output while avoiding unnecessary framework
@@ -17,7 +17,7 @@ main.py
 
 examples / API users
   -> AmmeterTestFramework facade
-       -> application use cases
+       -> measurement, sampling, and analysis use cases
        -> infrastructure adapters
        -> result serialization
 
@@ -44,8 +44,8 @@ wall-clock sleeping out of the fixed-deadline scheduling policy.
 
 | Layer | Responsibility |
 |---|---|
-| Domain | Immutable settings, measurements, sampling slots/results, statuses, and error details |
-| Application | Normalize selectors, resolve sampling plans, validate readings, and execute measurement/sampling use cases through abstract ports |
+| Domain | Immutable settings, measurements, sampling slots/results, statistical analyses, statuses, and error details |
+| Application | Normalize selectors, resolve sampling plans, validate readings, and execute measurement, sampling, and statistical-analysis use cases through abstract ports |
 | Infrastructure/config | Load YAML and extract runtime or sampling configuration |
 | Infrastructure/emulators | Register, start, monitor, join, and stop emulators |
 | Infrastructure/clients | Adapt socket-client failures to application errors |
@@ -68,9 +68,12 @@ Each dataclass has its own module:
 - `SamplingSettings`
 - `SampleResult`
 - `SamplingResult`
+- `CurrentStatistics`
+- `SamplingAnalysis`
 - `RunningEmulator`
 
-Each extracted, Phase 2, or Phase 3 operation also has a dedicated module:
+Each extracted Phase 2, Phase 3, or Phase 4 operation also has a dedicated
+module:
 
 - YAML loading
 - Positive-number resolution
@@ -94,6 +97,10 @@ Each extracted, Phase 2, or Phase 3 operation also has a dedicated module:
 - Sleep adaptation
 - Sampling-result formatting and printing
 - Sampling-result serialization
+- Current-statistics calculation
+- Successful-sample analysis
+- Analysis-result formatting and printing
+- Analysis-result serialization
 - Application composition
 
 Protocol classes are similarly separated under `src/application/ports`.
@@ -172,12 +179,68 @@ through `sampling_result_to_dict()`.
 
 Sampling output contains raw current values, request latency, schedule timing,
 drift, and failure counts. Mean, median, standard deviation, minimum, maximum,
-and other statistical analysis remain Phase 4 responsibilities.
+and their reporting are layered on separately by Phase 4.
+
+## Phase 4 analysis contract
+
+Phase 4 adds two immutable domain models. `CurrentStatistics` holds the number
+of analyzed measurements, mean, median, population standard deviation, minimum,
+maximum, and unit. `SamplingAnalysis` pairs optional statistics with the exact
+`SamplingResult` from which they were derived, preserving measurement, timing,
+status, and error provenance.
+
+Phase 4 follows the existing dependency direction:
+
+| Layer | Dedicated modules |
+|---|---|
+| Domain | `current_statistics.py`, `sampling_analysis.py`, `services/calculate_current_statistics.py` |
+| Application | `analyze_sampling_result.py` |
+| Presentation | `sampling_analysis_to_dict.py`, `format_analysis_results_table.py`, `print_analysis_results.py` |
+| Public facade/example | `test_framework.py`, `examples/run_analysis.py` |
+
+The analysis policy is split between a pure domain service and an application
+use case:
+
+- `calculate_current_statistics()` validates a finite iterable and computes
+  the metrics without importing presentation, infrastructure, or the public
+  framework facade.
+- `analyze_sampling_result()` validates the source contract and creates a
+  `SamplingAnalysis`. That immutable model selects `SUCCESS` measurements and
+  derives its statistics through the domain service, so callers cannot pair a
+  sampling result with conflicting metrics.
+
+Failed and missed slots therefore never distort the numeric metrics, but they
+remain present in the attached sampling result. A partial run has statistics
+when one or more slots succeeded and retains its `PARTIAL` aggregate status and
+errors. A run with no successful slots has `statistics=None`; the architecture
+does not represent missing data as zero or `NaN`.
+
+A singleton population has equal mean, median, minimum, and maximum and a
+standard deviation of zero. For larger inputs, population standard deviation is
+used intentionally because the successful values form the complete observed
+population for the run. The calculation uses Python's standard-library
+`statistics.mean` and `statistics.pstdev`; Phase 4 adds no NumPy, SciPy, pandas,
+or other analysis dependency.
+
+The framework facade exposes typed `analyze()` and `analyze_all()` methods.
+`run_analysis()` and `run_all_analyses()` pass those typed values through the
+dedicated `sampling_analysis_to_dict()` presentation adapter. Serialized output
+contains summary counts, optional metrics, an explicit `population` deviation
+label, and the full serialized sampling result. Console formatting and printing
+are presentation-only modules, and `examples/run_analysis.py` demonstrates the
+typed all-ammeter path.
+
+## Phase 4 boundary
+
+Required descriptive statistics and their console/serialized reporting are in
+scope. Visualization and performance-consistency evaluation remain optional
+bonus work. Unique run identification, metadata archives, historical retrieval,
+and comparison are deferred to Phase 5 result management.
 
 ## Public and compatibility contracts
 
 The architecture retains the earlier interfaces and adds the Phase 3 sampling
-contracts:
+and Phase 4 analysis contracts:
 
 - `main.main(config_path=..., emit=...)`
 - `main.DEFAULT_CONFIG_PATH`
@@ -190,6 +253,10 @@ contracts:
 - `AmmeterTestFramework.sample()` and `sample_all()` for typed sampling results
 - `AmmeterTestFramework.run_sampling_test()` and
   `run_all_sampling_tests()` for JSON-friendly sampling dictionaries
+- `AmmeterTestFramework.analyze()` and `analyze_all()` for typed statistical
+  analyses
+- `AmmeterTestFramework.run_analysis()` and `run_all_analyses()` for
+  JSON-friendly analysis dictionaries
 - Measurement order and console formatting
 - Startup, timeout, cleanup, and error-precedence behavior
 
@@ -203,8 +270,8 @@ application dependency direction.
 configuration, threading, socket, or concrete-emulator responsibilities again.
 It also verifies one dataclass/operation per selected module and prevents the
 application layer from importing infrastructure implementations. The checked
-module lists include the Phase 2/3 measurement, sampling, validation, timing,
-presentation, and serialization components. Dependency checks also keep domain
-models independent from outer layers and prevent application policies from
-importing infrastructure, presentation, bootstrap, framework, YAML, or system
-time implementations directly.
+module lists include the Phase 2/3/4 measurement, sampling, analysis,
+validation, timing, presentation, and serialization components. Dependency
+checks also keep domain models independent from outer layers and prevent
+application policies from importing infrastructure, presentation, bootstrap,
+framework, YAML, or system time implementations directly.

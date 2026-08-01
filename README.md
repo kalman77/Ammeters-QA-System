@@ -34,7 +34,9 @@ python -m pip install -r requirements.txt
 ```
 
 Phase 1 was verified with Python 3.14.6 and PyYAML 6.0.3. No other external
-libraries are required or were installed.
+libraries are required or were installed. Phase 4 statistical analysis uses
+Python's standard-library `statistics` module, so it does not add NumPy, SciPy,
+pandas, or another runtime dependency.
 
 ## Run the emulator smoke test
 
@@ -246,7 +248,108 @@ maximum observed drift, and error codes.
 
 Phase 3 records raw measurements and timing/error metadata but does not calculate
 mean, median, standard deviation, minimum, or maximum. Statistical analysis and
-its reporting are deferred explicitly to Phase 4.
+its reporting are implemented separately by the Phase 4 APIs below.
+
+## Statistical result analysis (Phase 4)
+
+`analyze()` samples one configured ammeter and returns an immutable
+`SamplingAnalysis`. The analysis retains the complete `SamplingResult` for
+provenance and adds an optional immutable `CurrentStatistics` value:
+
+```python
+from src.testing.test_framework import AmmeterTestFramework
+
+framework = AmmeterTestFramework()
+analysis = framework.analyze(
+    "greenlee",
+    measurements_count=10,
+    sampling_frequency_hz=5.0,
+)
+
+print(analysis.sampling_result.status.value)
+if analysis.statistics is not None:
+    print(analysis.statistics.measurements_count)
+    print(analysis.statistics.mean_current)
+    print(analysis.statistics.median_current)
+    print(analysis.statistics.standard_deviation_current)
+    print(analysis.statistics.minimum_current)
+    print(analysis.statistics.maximum_current)
+```
+
+`analyze_all()` returns a `dict[str, SamplingAnalysis]` in configured ammeter
+order. Both methods accept the same count, duration, and frequency arguments as
+the Phase 3 sampling APIs and execute one new sampling window per selected
+ammeter.
+
+Only slots whose nested measurement status is `success` contribute a current
+value. Failed and missed slots are excluded from the statistics, but they are
+not discarded: the original sampling result, aggregate status, per-slot errors,
+and timing remain attached to the analysis.
+
+The reported metrics are:
+
+| Field | Definition |
+|---|---|
+| `measurements_count` | Number of successful samples used |
+| `mean_current` | Arithmetic mean |
+| `median_current` | Middle value, or mean of the two middle values |
+| `standard_deviation_current` | Population standard deviation |
+| `minimum_current` | Smallest successful current |
+| `maximum_current` | Largest successful current |
+| `unit` | Amperes (`A`) |
+
+Population standard deviation is intentional: the successful readings are
+treated as the complete observed population for that sampling run, so the
+calculation divides by `N`, not `N - 1`. The implementation uses Python's
+standard-library `statistics` support and validates that every analyzed current
+is finite.
+
+Edge cases have explicit results:
+
+- One successful sample produces identical mean, median, minimum, and maximum,
+  with a population standard deviation of `0.0`.
+- A run with no successful samples produces `statistics=None`; no fabricated
+  zero or `NaN` metrics are returned.
+- A partial sampling run still produces statistics when at least one slot
+  succeeded. Its `partial` status and all excluded-slot or lifecycle errors
+  remain visible in the attached `SamplingResult`.
+
+`run_analysis()` and `run_all_analyses()` expose the same single/all operations
+as JSON-friendly dictionaries. The serialized result includes ammeter identity,
+status, timestamp, unit, analyzed/excluded/failed/missed counts, the metrics
+(or `null` when there is no usable data), and the complete serialized sampling
+result. It also labels the deviation method as `population`.
+
+### Run the analysis example
+
+From the project root:
+
+```sh
+python -m examples.run_analysis
+```
+
+The example samples every configured ammeter and prints an aligned table:
+
+```text
+Ammeter Statistical Analysis
++----------+---------+--------------+---------------+----------+------------+----------------+----------+----------+--------+
+| Ammeter  | Status  | Used/Planned | Failed/Missed | Mean (A) | Median (A) | Pop StdDev (A) |  Min (A) |  Max (A) | Errors |
++----------+---------+--------------+---------------+----------+------------+----------------+----------+----------+--------+
+| GREENLEE | SUCCESS |          5/5 |           0/0 | 0.420000 |   0.420000 |       0.014142 | 0.400000 | 0.440000 | -      |
++----------+---------+--------------+---------------+----------+------------+----------------+----------+----------+--------+
+```
+
+Actual values vary because the emulator inputs are random. `Used/Planned`
+makes successful-sample filtering visible, while `Failed/Missed` and `Errors`
+preserve the reason excluded samples were not analyzed.
+
+### Phase 4 boundary
+
+Phase 4 implements the required descriptive statistics and their reporting.
+The visualization and performance-consistency items remain optional bonus work
+and are deliberately deferred. Unique run identifiers, metadata archives,
+historical retrieval, and result comparison belong to Phase 5 result management
+and are not part of this phase.
 
 ## Configured protocols
 
@@ -278,11 +381,11 @@ valid.
 ## Project structure
 
 - `main.py`: thin public entry point and CLI exception boundary
-- `src/domain/models/`: immutable settings, measurement results, and sampling
-  results, one dataclass per module
+- `src/domain/models/`: immutable settings, measurement/sampling results, and
+  statistical analyses, one dataclass per module
 - `src/application/ports/`: dependency contracts used by application logic
 - `src/application/use_cases/`: selection, validation, measurement, and
-  fixed-deadline sampling workflows
+  fixed-deadline sampling/statistical-analysis workflows
 - `src/application/errors/`: typed selector, configuration, and operational
   errors
 - `src/infrastructure/config/`: YAML loading and configuration resolution
@@ -291,8 +394,10 @@ valid.
 - `src/infrastructure/clients/`: measurement transport adapters
 - `src/infrastructure/time/`: UTC, monotonic clock, and sleep adapters
 - `src/bootstrap/`: dependency composition
-- `src/presentation/console/`: smoke-test, typed-result, and sampling tables
-- `src/presentation/serialization/`: JSON-friendly result serialization
+- `src/presentation/console/`: smoke-test, measurement, sampling, and analysis
+  tables
+- `src/presentation/serialization/`: JSON-friendly measurement, sampling, and
+  analysis serialization
 - `Ammeters/`: existing emulator and socket infrastructure adapters
 - `config/config.yaml`: runtime and sampling configuration
 - `src/testing/`: public `AmmeterTestFramework` facade
@@ -343,6 +448,21 @@ decisions.
 - Added typed and JSON-friendly single/all sampling APIs.
 - Added a sampling summary table and runnable module example.
 - Kept statistical analysis deferred to Phase 4.
+
+## Phase 4 additions
+
+- Added immutable current-statistics and sampling-analysis domain contracts.
+- Added mean, median, population standard deviation, minimum, and maximum over
+  successful samples only.
+- Added explicit singleton, no-successful-data, and partial-run semantics.
+- Added typed `analyze()`/`analyze_all()` and JSON-friendly
+  `run_analysis()`/`run_all_analyses()` APIs.
+- Added analysis serialization with full sampling provenance.
+- Added an aligned statistical table and runnable module example.
+- Used only Python's standard library for analysis; no external analysis
+  dependency was added.
+- Deferred visualization and performance-consistency bonus work, and kept
+  archival/result management assigned to Phase 5.
 
 ## Run tests
 
