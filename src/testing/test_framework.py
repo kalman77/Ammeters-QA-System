@@ -10,11 +10,17 @@ from src.application.ports.ammeter_client import AmmeterClient
 from src.application.ports.emulator_starter import EmulatorStarter
 from src.application.ports.emulator_stopper import EmulatorStopper
 from src.application.ports.monotonic_clock import MonotonicClock
+from src.application.ports.sleeper import Sleeper
 from src.application.ports.utc_clock import UtcClock
+from src.application.use_cases.run_ammeter_sampling_test import (
+    run_ammeter_sampling_test,
+)
 from src.application.use_cases.run_single_ammeter_test import (
     run_single_ammeter_test,
 )
 from src.domain.models.measurement_result import MeasurementResult
+from src.domain.models.sampling_result import SamplingResult
+from src.domain.models.sampling_settings import SamplingSettings
 from src.infrastructure.clients.read_ammeter_current import (
     read_ammeter_current,
 )
@@ -32,8 +38,15 @@ from src.infrastructure.emulators.stop_emulators import (
 )
 from src.infrastructure.time.read_monotonic_time import read_monotonic_time
 from src.infrastructure.time.read_utc_time import read_utc_time
+from src.infrastructure.time.sleep_for_seconds import sleep_for_seconds
 from src.presentation.serialization.measurement_result_to_dict import (
     measurement_result_to_dict,
+)
+from src.presentation.serialization.sampling_result_to_dict import (
+    sampling_result_to_dict,
+)
+from src.testing.resolve_framework_sampling_settings import (
+    resolve_framework_sampling_settings,
 )
 
 
@@ -52,6 +65,7 @@ class AmmeterTestFramework:
         request_current: Optional[AmmeterClient] = None,
         monotonic_clock: Optional[MonotonicClock] = None,
         utc_clock: Optional[UtcClock] = None,
+        sleeper: Optional[Sleeper] = None,
     ):
         registry = (
             EMULATOR_REGISTRY
@@ -79,6 +93,7 @@ class AmmeterTestFramework:
         self._request_current = request_current or read_ammeter_current
         self._monotonic_clock = monotonic_clock or read_monotonic_time
         self._utc_clock = utc_clock or read_utc_time
+        self._sleeper = sleeper or sleep_for_seconds
 
     @property
     def ammeter_types(self) -> Tuple[str, ...]:
@@ -115,4 +130,108 @@ class AmmeterTestFramework:
         return {
             ammeter_type: measurement_result_to_dict(result)
             for ammeter_type, result in self.measure_all().items()
+        }
+
+    @property
+    def sampling_settings(self) -> SamplingSettings:
+        """Resolve the configured Phase 3 sampling window lazily."""
+        return resolve_framework_sampling_settings(
+            self.config,
+            None,
+            None,
+            None,
+        )
+
+    def _sample_with_settings(
+        self,
+        ammeter_type: object,
+        sampling_settings: SamplingSettings,
+    ) -> SamplingResult:
+        return run_ammeter_sampling_test(
+            self._runtime_settings,
+            sampling_settings,
+            ammeter_type,
+            start_emulators=self._start_emulators,
+            stop_emulators=self._stop_emulators,
+            request_current=self._request_current,
+            monotonic_clock=self._monotonic_clock,
+            utc_clock=self._utc_clock,
+            sleeper=self._sleeper,
+        )
+
+    def sample(
+        self,
+        ammeter_type: object,
+        *,
+        measurements_count: Optional[object] = None,
+        total_duration_seconds: Optional[object] = None,
+        sampling_frequency_hz: Optional[object] = None,
+    ) -> SamplingResult:
+        """Run the canonical typed sampling API for one ammeter."""
+        sampling_settings = resolve_framework_sampling_settings(
+            self.config,
+            measurements_count,
+            total_duration_seconds,
+            sampling_frequency_hz,
+        )
+        return self._sample_with_settings(
+            ammeter_type,
+            sampling_settings,
+        )
+
+    def sample_all(
+        self,
+        *,
+        measurements_count: Optional[object] = None,
+        total_duration_seconds: Optional[object] = None,
+        sampling_frequency_hz: Optional[object] = None,
+    ) -> Dict[str, SamplingResult]:
+        """Sample every configured ammeter with one resolved schedule."""
+        sampling_settings = resolve_framework_sampling_settings(
+            self.config,
+            measurements_count,
+            total_duration_seconds,
+            sampling_frequency_hz,
+        )
+        return {
+            ammeter_type: self._sample_with_settings(
+                ammeter_type,
+                sampling_settings,
+            )
+            for ammeter_type in self.ammeter_types
+        }
+
+    def run_sampling_test(
+        self,
+        ammeter_type: object,
+        *,
+        measurements_count: Optional[object] = None,
+        total_duration_seconds: Optional[object] = None,
+        sampling_frequency_hz: Optional[object] = None,
+    ) -> Dict[str, Any]:
+        """Run one sampling window and return a JSON-friendly dictionary."""
+        result = self.sample(
+            ammeter_type,
+            measurements_count=measurements_count,
+            total_duration_seconds=total_duration_seconds,
+            sampling_frequency_hz=sampling_frequency_hz,
+        )
+        return sampling_result_to_dict(result)
+
+    def run_all_sampling_tests(
+        self,
+        *,
+        measurements_count: Optional[object] = None,
+        total_duration_seconds: Optional[object] = None,
+        sampling_frequency_hz: Optional[object] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Run and serialize one sampling window for every ammeter."""
+        results = self.sample_all(
+            measurements_count=measurements_count,
+            total_duration_seconds=total_duration_seconds,
+            sampling_frequency_hz=sampling_frequency_hz,
+        )
+        return {
+            ammeter_type: sampling_result_to_dict(result)
+            for ammeter_type, result in results.items()
         }
