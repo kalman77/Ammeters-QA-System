@@ -8,3 +8,4 @@ class MeasurementErrorCode(str, Enum):
     MEASUREMENT_REQUEST_FAILED = "measurement_request_failed"
     INVALID_MEASUREMENT = "invalid_measurement"
     EMULATOR_STOP_FAILED = "emulator_stop_failed"
+    SAMPLING_SLOT_MISSED = "sampling_slot_missed"
