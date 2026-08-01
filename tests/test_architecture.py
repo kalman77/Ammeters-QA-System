@@ -65,6 +65,9 @@ class CleanArchitectureTests(unittest.TestCase):
             ): "MeasurementResult",
             "src/domain/models/network_settings.py": "NetworkSettings",
             "src/domain/models/runtime_settings.py": "RuntimeSettings",
+            "src/domain/models/sample_result.py": "SampleResult",
+            "src/domain/models/sampling_result.py": "SamplingResult",
+            "src/domain/models/sampling_settings.py": "SamplingSettings",
             (
                 "src/infrastructure/emulators/running_emulator.py"
             ): "RunningEmulator",
@@ -128,14 +131,32 @@ class CleanArchitectureTests(unittest.TestCase):
                 "src/application/use_cases/validate_current.py"
             ): "validate_current",
             (
+                "src/application/use_cases/collect_scheduled_sample.py"
+            ): "collect_scheduled_sample",
+            (
+                "src/application/use_cases/resolve_sampling_settings.py"
+            ): "resolve_sampling_settings",
+            (
+                "src/application/use_cases/run_ammeter_sampling_test.py"
+            ): "run_ammeter_sampling_test",
+            (
+                "src/application/use_cases/wait_until_deadline.py"
+            ): "wait_until_deadline",
+            (
                 "src/infrastructure/clients/read_ammeter_current.py"
             ): "read_ammeter_current",
+            (
+                "src/infrastructure/config/read_sampling_settings.py"
+            ): "read_sampling_settings",
             (
                 "src/infrastructure/time/read_monotonic_time.py"
             ): "read_monotonic_time",
             (
                 "src/infrastructure/time/read_utc_time.py"
             ): "read_utc_time",
+            (
+                "src/infrastructure/time/sleep_for_seconds.py"
+            ): "sleep_for_seconds",
             (
                 "src/presentation/console/format_measurements_table.py"
             ): "format_measurements_table",
@@ -150,9 +171,22 @@ class CleanArchitectureTests(unittest.TestCase):
                 "src/presentation/console/print_measurement_results.py"
             ): "print_measurement_results",
             (
+                "src/presentation/console/format_sampling_results_table.py"
+            ): "format_sampling_results_table",
+            (
+                "src/presentation/console/print_sampling_results.py"
+            ): "print_sampling_results",
+            (
                 "src/presentation/serialization/"
                 "measurement_result_to_dict.py"
             ): "measurement_result_to_dict",
+            (
+                "src/presentation/serialization/"
+                "sampling_result_to_dict.py"
+            ): "sampling_result_to_dict",
+            (
+                "src/testing/resolve_framework_sampling_settings.py"
+            ): "resolve_framework_sampling_settings",
             "src/bootstrap/run_application.py": "run_application",
         }
 
@@ -179,10 +213,38 @@ class CleanArchitectureTests(unittest.TestCase):
                 forbidden = [
                     module
                     for module in imports
-                    if module == "Ammeters"
+                    if module in {"socket", "time", "yaml", "Ammeters"}
                     or module.startswith("Ammeters.")
-                    or module == "src.infrastructure"
-                    or module.startswith("src.infrastructure.")
+                    or (
+                        module.startswith("src.")
+                        and module != "src.application"
+                        and not module.startswith("src.application.")
+                        and module != "src.domain"
+                        and not module.startswith("src.domain.")
+                    )
+                ]
+                self.assertEqual(forbidden, [])
+
+    def test_domain_layer_does_not_import_outer_layers(self) -> None:
+        domain_root = PROJECT_ROOT / "src" / "domain"
+        for path in domain_root.rglob("*.py"):
+            with self.subTest(module=path.relative_to(PROJECT_ROOT)):
+                imports = self._imported_modules(
+                    ast.parse(
+                        path.read_text(encoding="utf-8"),
+                        filename=str(path),
+                    )
+                )
+                forbidden = [
+                    module
+                    for module in imports
+                    if module in {"yaml", "Ammeters"}
+                    or module.startswith("Ammeters.")
+                    or (
+                        module.startswith("src.")
+                        and module != "src.domain"
+                        and not module.startswith("src.domain.")
+                    )
                 ]
                 self.assertEqual(forbidden, [])
 
