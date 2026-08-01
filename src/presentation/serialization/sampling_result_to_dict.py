@@ -13,6 +13,9 @@ def sampling_result_to_dict(
     result: SamplingResult,
 ) -> Dict[str, Any]:
     """Serialize a sampling result without leaking datetime or enum values."""
+    retried_samples = sum(
+        sample.request_attempts > 1 for sample in result.samples
+    )
     successful_samples = sum(
         sample.result.status is MeasurementStatus.SUCCESS
         for sample in result.samples
@@ -62,6 +65,7 @@ def sampling_result_to_dict(
                     if sample.started_elapsed_seconds is not None
                     else None
                 ),
+                "request_attempts": sample.request_attempts,
                 "result": measurement_result_to_dict(sample.result),
             }
         )
@@ -92,6 +96,12 @@ def sampling_result_to_dict(
                 result.settings.sampling_frequency_hz
             ),
         },
+        "retry": {
+            "max_attempts": result.retry_policy.max_attempts,
+            "retry_delay_seconds": (
+                result.retry_policy.retry_delay_seconds
+            ),
+        },
         "summary": {
             "successful_samples": successful_samples,
             "failed_samples": (
@@ -100,6 +110,7 @@ def sampling_result_to_dict(
                 - missed_samples
             ),
             "missed_samples": missed_samples,
+            "retried_samples": retried_samples,
         },
         "samples": serialized_samples,
         "errors": [

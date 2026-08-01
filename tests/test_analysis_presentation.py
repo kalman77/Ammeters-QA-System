@@ -165,6 +165,7 @@ class AnalysisPresentationTests(unittest.TestCase):
                 "excluded_samples": 2,
                 "failed_samples": 1,
                 "missed_samples": 1,
+                "retried_samples": 0,
             },
         )
         self.assertEqual(
@@ -205,6 +206,7 @@ class AnalysisPresentationTests(unittest.TestCase):
                 "excluded_samples": 0,
                 "failed_samples": 0,
                 "missed_samples": 0,
+                "retried_samples": 0,
             },
         )
         self.assertEqual(

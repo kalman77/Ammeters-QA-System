@@ -83,6 +83,7 @@ class CleanArchitectureTests(unittest.TestCase):
             (
                 "src/domain/models/run_metadata_entry.py"
             ): "RunMetadataEntry",
+            "src/domain/models/retry_policy.py": "RetryPolicy",
             "src/domain/models/runtime_settings.py": "RuntimeSettings",
             "src/domain/models/sample_result.py": "SampleResult",
             (
@@ -186,6 +187,18 @@ class CleanArchitectureTests(unittest.TestCase):
             (
                 "src/application/use_cases/collect_scheduled_sample.py"
             ): "collect_scheduled_sample",
+            (
+                "src/application/use_cases/measure_with_retries.py"
+            ): "measure_with_retries",
+            (
+                "src/application/use_cases/resolve_retry_policy.py"
+            ): "resolve_retry_policy",
+            (
+                "src/infrastructure/config/read_retry_policy.py"
+            ): "read_retry_policy",
+            (
+                "src/testing/resolve_framework_retry_policy.py"
+            ): "resolve_framework_retry_policy",
             (
                 "src/application/use_cases/resolve_sampling_settings.py"
             ): "resolve_sampling_settings",

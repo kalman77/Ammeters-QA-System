@@ -25,6 +25,7 @@ from src.application.use_cases.wait_until_deadline import (
 from src.domain.enums.measurement_error_code import MeasurementErrorCode
 from src.domain.enums.measurement_status import MeasurementStatus
 from src.domain.models.measurement_error import MeasurementError
+from src.domain.models.retry_policy import RetryPolicy
 from src.domain.models.runtime_settings import RuntimeSettings
 from src.domain.models.sample_result import SampleResult
 from src.domain.models.sampling_result import SamplingResult
@@ -42,6 +43,7 @@ def run_ammeter_sampling_test(
     monotonic_clock: MonotonicClock,
     utc_clock: UtcClock,
     sleeper: Sleeper,
+    retry_policy: RetryPolicy = RetryPolicy(),
 ) -> SamplingResult:
     """Run one fixed-deadline sampling window for a selected ammeter."""
     normalized_type = normalize_ammeter_type(ammeter_type)
@@ -106,6 +108,7 @@ def run_ammeter_sampling_test(
                             monotonic_clock=monotonic_clock,
                             utc_clock=utc_clock,
                             sleeper=sleeper,
+                            retry_policy=retry_policy,
                         )
                     )
 
@@ -168,4 +171,5 @@ def run_ammeter_sampling_test(
         samples=tuple(samples),
         errors=tuple(errors),
         unit="A",
+        retry_policy=retry_policy,
     )

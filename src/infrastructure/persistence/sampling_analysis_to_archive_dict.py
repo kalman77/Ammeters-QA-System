@@ -3,6 +3,9 @@ from typing import Any, Dict
 from src.domain.enums.measurement_error_code import MeasurementErrorCode
 from src.domain.enums.measurement_status import MeasurementStatus
 from src.domain.models.sampling_analysis import SamplingAnalysis
+from src.infrastructure.persistence.archive_schema_version import (
+    ARCHIVE_SCHEMA_VERSION,
+)
 from src.infrastructure.persistence.sampling_result_to_archive_dict import (
     sampling_result_to_archive_dict,
 )
@@ -10,8 +13,9 @@ from src.infrastructure.persistence.sampling_result_to_archive_dict import (
 
 def sampling_analysis_to_archive_dict(
     analysis: SamplingAnalysis,
+    schema_version: int = ARCHIVE_SCHEMA_VERSION,
 ) -> Dict[str, Any]:
-    """Encode one analysis using the immutable archive-v1 schema."""
+    """Encode one analysis using the requested archive schema."""
     sampling_result = analysis.sampling_result
     analyzed_samples = sum(
         sample.result.status is MeasurementStatus.SUCCESS
@@ -71,6 +75,7 @@ def sampling_analysis_to_archive_dict(
         },
         "statistics": serialized_statistics,
         "sampling_result": sampling_result_to_archive_dict(
-            sampling_result
+            sampling_result,
+            schema_version,
         ),
     }

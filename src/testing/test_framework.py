@@ -23,6 +23,7 @@ from src.application.use_cases.run_single_ammeter_test import (
     run_single_ammeter_test,
 )
 from src.domain.models.measurement_result import MeasurementResult
+from src.domain.models.retry_policy import RetryPolicy
 from src.domain.models.sampling_analysis import SamplingAnalysis
 from src.domain.models.sampling_result import SamplingResult
 from src.domain.models.sampling_settings import SamplingSettings
@@ -56,6 +57,9 @@ from src.presentation.serialization.sampling_result_to_dict import (
 from src.testing.ammeter_result_manager import AmmeterResultManager
 from src.testing.build_ammeter_result_manager import (
     build_ammeter_result_manager,
+)
+from src.testing.resolve_framework_retry_policy import (
+    resolve_framework_retry_policy,
 )
 from src.testing.resolve_framework_sampling_settings import (
     resolve_framework_sampling_settings,
@@ -171,10 +175,16 @@ class AmmeterTestFramework:
             None,
         )
 
+    @property
+    def retry_policy(self) -> RetryPolicy:
+        """Resolve the configured per-slot retry policy lazily."""
+        return resolve_framework_retry_policy(self.config, None, None)
+
     def _sample_with_settings(
         self,
         ammeter_type: object,
         sampling_settings: SamplingSettings,
+        retry_policy: RetryPolicy,
     ) -> SamplingResult:
         return run_ammeter_sampling_test(
             self._runtime_settings,
@@ -186,6 +196,7 @@ class AmmeterTestFramework:
             monotonic_clock=self._monotonic_clock,
             utc_clock=self._utc_clock,
             sleeper=self._sleeper,
+            retry_policy=retry_policy,
         )
 
     def sample(
@@ -195,6 +206,8 @@ class AmmeterTestFramework:
         measurements_count: Optional[object] = None,
         total_duration_seconds: Optional[object] = None,
         sampling_frequency_hz: Optional[object] = None,
+        max_attempts: Optional[object] = None,
+        retry_delay_seconds: Optional[object] = None,
     ) -> SamplingResult:
         """Run the canonical typed sampling API for one ammeter."""
         sampling_settings = resolve_framework_sampling_settings(
@@ -206,6 +219,11 @@ class AmmeterTestFramework:
         return self._sample_with_settings(
             ammeter_type,
             sampling_settings,
+            resolve_framework_retry_policy(
+                self.config,
+                max_attempts,
+                retry_delay_seconds,
+            ),
         )
 
     def sample_all(
@@ -214,6 +232,8 @@ class AmmeterTestFramework:
         measurements_count: Optional[object] = None,
         total_duration_seconds: Optional[object] = None,
         sampling_frequency_hz: Optional[object] = None,
+        max_attempts: Optional[object] = None,
+        retry_delay_seconds: Optional[object] = None,
     ) -> Dict[str, SamplingResult]:
         """Sample every configured ammeter with one resolved schedule."""
         sampling_settings = resolve_framework_sampling_settings(
@@ -222,10 +242,16 @@ class AmmeterTestFramework:
             total_duration_seconds,
             sampling_frequency_hz,
         )
+        retry_policy = resolve_framework_retry_policy(
+            self.config,
+            max_attempts,
+            retry_delay_seconds,
+        )
         return {
             ammeter_type: self._sample_with_settings(
                 ammeter_type,
                 sampling_settings,
+                retry_policy,
             )
             for ammeter_type in self.ammeter_types
         }
@@ -237,6 +263,8 @@ class AmmeterTestFramework:
         measurements_count: Optional[object] = None,
         total_duration_seconds: Optional[object] = None,
         sampling_frequency_hz: Optional[object] = None,
+        max_attempts: Optional[object] = None,
+        retry_delay_seconds: Optional[object] = None,
     ) -> Dict[str, Any]:
         """Run one sampling window and return a JSON-friendly dictionary."""
         result = self.sample(
@@ -244,6 +272,8 @@ class AmmeterTestFramework:
             measurements_count=measurements_count,
             total_duration_seconds=total_duration_seconds,
             sampling_frequency_hz=sampling_frequency_hz,
+            max_attempts=max_attempts,
+            retry_delay_seconds=retry_delay_seconds,
         )
         return sampling_result_to_dict(result)
 
@@ -253,12 +283,16 @@ class AmmeterTestFramework:
         measurements_count: Optional[object] = None,
         total_duration_seconds: Optional[object] = None,
         sampling_frequency_hz: Optional[object] = None,
+        max_attempts: Optional[object] = None,
+        retry_delay_seconds: Optional[object] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """Run and serialize one sampling window for every ammeter."""
         results = self.sample_all(
             measurements_count=measurements_count,
             total_duration_seconds=total_duration_seconds,
             sampling_frequency_hz=sampling_frequency_hz,
+            max_attempts=max_attempts,
+            retry_delay_seconds=retry_delay_seconds,
         )
         return {
             ammeter_type: sampling_result_to_dict(result)
@@ -272,6 +306,8 @@ class AmmeterTestFramework:
         measurements_count: Optional[object] = None,
         total_duration_seconds: Optional[object] = None,
         sampling_frequency_hz: Optional[object] = None,
+        max_attempts: Optional[object] = None,
+        retry_delay_seconds: Optional[object] = None,
     ) -> SamplingAnalysis:
         """Sample one ammeter once and return its statistical analysis."""
         sampling_result = self.sample(
@@ -279,6 +315,8 @@ class AmmeterTestFramework:
             measurements_count=measurements_count,
             total_duration_seconds=total_duration_seconds,
             sampling_frequency_hz=sampling_frequency_hz,
+            max_attempts=max_attempts,
+            retry_delay_seconds=retry_delay_seconds,
         )
         return analyze_sampling_result(sampling_result)
 
@@ -288,12 +326,16 @@ class AmmeterTestFramework:
         measurements_count: Optional[object] = None,
         total_duration_seconds: Optional[object] = None,
         sampling_frequency_hz: Optional[object] = None,
+        max_attempts: Optional[object] = None,
+        retry_delay_seconds: Optional[object] = None,
     ) -> Dict[str, SamplingAnalysis]:
         """Sample and statistically analyze every configured ammeter."""
         sampling_results = self.sample_all(
             measurements_count=measurements_count,
             total_duration_seconds=total_duration_seconds,
             sampling_frequency_hz=sampling_frequency_hz,
+            max_attempts=max_attempts,
+            retry_delay_seconds=retry_delay_seconds,
         )
         return {
             ammeter_type: analyze_sampling_result(result)
@@ -307,6 +349,8 @@ class AmmeterTestFramework:
         measurements_count: Optional[object] = None,
         total_duration_seconds: Optional[object] = None,
         sampling_frequency_hz: Optional[object] = None,
+        max_attempts: Optional[object] = None,
+        retry_delay_seconds: Optional[object] = None,
     ) -> Dict[str, Any]:
         """Sample, analyze, and serialize one configured ammeter."""
         analysis = self.analyze(
@@ -314,6 +358,8 @@ class AmmeterTestFramework:
             measurements_count=measurements_count,
             total_duration_seconds=total_duration_seconds,
             sampling_frequency_hz=sampling_frequency_hz,
+            max_attempts=max_attempts,
+            retry_delay_seconds=retry_delay_seconds,
         )
         return sampling_analysis_to_dict(analysis)
 
@@ -323,12 +369,16 @@ class AmmeterTestFramework:
         measurements_count: Optional[object] = None,
         total_duration_seconds: Optional[object] = None,
         sampling_frequency_hz: Optional[object] = None,
+        max_attempts: Optional[object] = None,
+        retry_delay_seconds: Optional[object] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """Sample, analyze, and serialize every configured ammeter."""
         analyses = self.analyze_all(
             measurements_count=measurements_count,
             total_duration_seconds=total_duration_seconds,
             sampling_frequency_hz=sampling_frequency_hz,
+            max_attempts=max_attempts,
+            retry_delay_seconds=retry_delay_seconds,
         )
         return {
             ammeter_type: sampling_analysis_to_dict(analysis)

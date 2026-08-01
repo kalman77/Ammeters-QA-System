@@ -51,7 +51,7 @@ policies.
 
 | Layer | Responsibility |
 |---|---|
-| Domain | Immutable settings, measurements, sampling slots/results, analyses, archived runs, archive queries, comparisons, statuses, and error details |
+| Domain | Immutable settings, retry policies, measurements, sampling slots/results, analyses, archived runs, archive queries, comparisons, statuses, and error details |
 | Application | Normalize selectors and archive inputs, resolve sampling/query plans, and execute measurement, sampling, analysis, archival, retrieval, and comparison use cases through abstract ports |
 | Infrastructure/config | Load YAML and lazily extract runtime, sampling, or result-management configuration |
 | Infrastructure/emulators | Register, start, monitor, join, and stop emulators |
@@ -61,6 +61,7 @@ policies.
 | Infrastructure/persistence | Atomically save, reconstruct, and list versioned append-only JSON archives |
 | Bootstrap | Select concrete adapters and compose dependencies |
 | Presentation | Format console tables and serialize typed measurement, analysis, archive, and comparison values |
+| Presentation/desktop | Optional PySide6 console that drives the public facades and decorates their client and sleeper ports for live streaming and cancellation |
 | `AmmeterTestFramework` | Expose measurement/sampling/analysis APIs and lazily compose its result manager |
 | `AmmeterResultManager` | Expose typed archive, retrieval, filtering, and historical-comparison APIs |
 | `main.py` | Preserve the public entry point and CLI error boundary |
@@ -76,6 +77,7 @@ Each dataclass has its own module:
 - `MeasurementError`
 - `MeasurementResult`
 - `SamplingSettings`
+- `RetryPolicy`
 - `SampleResult`
 - `SamplingResult`
 - `CurrentStatistics`
@@ -108,6 +110,7 @@ dedicated module:
 - Sampling-setting extraction and resolution
 - Framework config/override selection
 - Fixed-deadline waiting and scheduled-sample collection
+- Retry-policy resolution, configuration reading, and bounded slot retries
 - Ammeter sampling orchestration
 - Sleep adaptation
 - Sampling-result formatting and printing
@@ -178,8 +181,9 @@ real delays.
 
 If the scheduler reaches a slot at or after its end, it creates a failed
 `SampleResult` with `SAMPLING_SLOT_MISSED` and does not issue a catch-up request.
-Requests are not retried. Every sampling run that starts has exactly one result
-for each configured slot.
+A missed slot is never retried, and retries of a live slot stay inside that
+slot (see [Retry contract](#retry-contract)). Every sampling run that starts has
+exactly one result for each configured slot.
 
 `SamplingResult` aggregates the resolved settings, scheduled/actual timing,
 nested `MeasurementResult` values, and lifecycle errors:
@@ -197,6 +201,60 @@ two must be provided, and the third is derived.
 `sample()` and `sample_all()` expose typed results.
 `run_sampling_test()` and `run_all_sampling_tests()` serialize the same results
 through `sampling_result_to_dict()`.
+
+## Retry contract
+
+`RetryPolicy` is a bounded value object (`max_attempts`, `retry_delay_seconds`)
+resolved the same way sampling settings are: `resolve_retry_policy()` validates
+explicit values, `read_retry_policy()` lazily reads `testing.retry`, and
+`resolve_framework_retry_policy()` chooses between them. A configuration file
+without `testing.retry` keeps the original one-attempt behaviour, so retries are
+strictly additive.
+
+The policy is applied by one dedicated use case, `measure_with_retries()`,
+which `collect_scheduled_sample()` calls in place of a bare measurement. The
+invariant that keeps Phase 3 intact is that every attempt *and its backoff*
+must finish inside the slot's own half-open window:
+
+- Before waiting, the use case checks whether `now + retry_delay_seconds` lands
+  at or past `slot_end`. If it would, the slot stops retrying rather than
+  sleeping past its own window. Delegating that wait unchecked would let the
+  shared waiter sleep into the next slot before noticing it had expired.
+- Retrying therefore never issues a catch-up request, never displaces slot
+  `i + 1`, and still yields exactly one `SampleResult` per configured slot.
+
+`SampleResult.request_attempts` records the requests a slot actually issued.
+Omitting it has exactly one valid meaning, so it is derived: a missed slot
+issued none, and a started slot issued one. `SamplingResult` rejects any sample
+whose attempts exceed the policy it claims to have run under.
+
+A slot that succeeds on a later attempt is `SUCCESS` with no errors, because the
+`MeasurementResult` invariants forbid pairing a measurement with errors. The
+attempt count is the record that retries were used; the last failure is reported
+only when the attempts are exhausted. Keeping the intermediate failures out of
+the status is what prevents a recovered run from degrading to `PARTIAL`.
+
+`SamplingResult` also stores the policy it executed under, so an archived run
+distinguishes "retries were permitted but unnecessary" from "retries were never
+permitted".
+
+## Archive schema versioning
+
+Adding retry provenance changed the archive document, so
+`ARCHIVE_SCHEMA_VERSION` is `2` and `SUPPORTED_ARCHIVE_SCHEMA_VERSIONS` is
+`(1, 2)`. Because loading re-encodes a decoded run and compares it to the stored
+bytes, the encoders take the schema version as a parameter and the loader
+re-encodes at the version the document declares:
+
+| Version | Retry fields | Written by |
+|---|---|---|
+| 1 | absent | releases before retries |
+| 2 | `sampling_result.retry` and per-sample `request_attempts` | current |
+
+A version-1 document decodes with the derived attempt counts and the default
+policy, then re-encodes as version 1, so existing archives keep validating
+byte-for-byte and are never rewritten. A version-1 document that *does* contain
+retry fields is rejected as corruption instead of being silently upgraded.
 
 ## Phase 3 boundary
 
@@ -361,6 +419,7 @@ Phase 4 analysis, and Phase 5 result-management contracts:
 - `AmmeterTestFramework.measure()` and `measure_all()` for typed results
 - `AmmeterTestFramework.run_test()` and `run_all_tests()` for JSON-friendly
   dictionaries
+- `AmmeterTestFramework.retry_policy` for the resolved per-slot retry policy
 - `AmmeterTestFramework.sample()` and `sample_all()` for typed sampling results
 - `AmmeterTestFramework.run_sampling_test()` and
   `run_all_sampling_tests()` for JSON-friendly sampling dictionaries
@@ -381,6 +440,44 @@ Phase 4 analysis, and Phase 5 result-management contracts:
 The original `Ammeters` package remains in place as an infrastructure adapter.
 Moving those emulators would add compatibility risk without improving the
 application dependency direction.
+
+## Desktop presentation adapter
+
+`src/presentation/desktop` is an optional outermost adapter. It depends on the
+public facades and the serialization adapters, and nothing depends on it:
+
+```text
+src/presentation/desktop
+  -> AmmeterTestFramework / AmmeterResultManager
+  -> presentation serialization adapters
+  -> infrastructure client, clock, and config adapters (injected as ports)
+```
+
+The desktop layer adds no measurement, sampling, analysis, or archive policy.
+Live streaming, fault injection, and cancellation are implemented by decorating
+the ports the framework already accepts:
+
+| Desktop component | Port it decorates | Effect |
+|---|---|---|
+| `LiveAmmeterClient` | `AmmeterClient` | Streams each completed request to the UI and can inject failures, invalid readings, outliers, or latency |
+| `CancellableSleeper` | `Sleeper` | Slices scheduled waits and raises `RunCancelled` so a stop unwinds through the sampling use case's emulator-shutdown `finally` block |
+
+Because injected faults surface as ordinary `MeasurementRequestError` values or
+non-finite readings, the resulting sample statuses, aggregate status, and
+statistics are still produced entirely by the Phase 3 and Phase 4 policies.
+The desktop layer never fabricates a status or a metric.
+
+Unlike the console adapter, the desktop modules are grouped by cohesion rather
+than split one function per file: Qt widget classes carry their own state and
+signal wiring, so splitting them would fragment a single object across many
+modules without improving the dependency direction. The Qt-free parts —
+`formatting.py` and `view_models.py` — hold every display decision that is worth
+testing and are covered headlessly by `tests/test_desktop_presentation.py`.
+
+The desktop entry point is `src/presentation/desktop/app.py`, reachable through
+`python -m src.presentation.desktop` or the `desktop_app.py` convenience script.
+`src/presentation/desktop/__init__.py` imports Qt lazily so the package can be
+imported for its Qt-free helpers without a display server.
 
 ## Architecture checks
 

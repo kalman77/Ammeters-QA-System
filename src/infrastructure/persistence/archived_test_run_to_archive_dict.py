@@ -11,12 +11,13 @@ from src.infrastructure.persistence.sampling_analysis_to_archive_dict import (
 
 def archived_test_run_to_archive_dict(
     archived_run: ArchivedTestRun,
+    schema_version: int = ARCHIVE_SCHEMA_VERSION,
 ) -> Dict[str, Any]:
-    """Encode one complete run using the immutable archive-v1 schema."""
+    """Encode one complete run using the requested archive schema."""
     if not isinstance(archived_run, ArchivedTestRun):
         raise ValueError("archived_run must be ArchivedTestRun")
     return {
-        "schema_version": ARCHIVE_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "run_id": archived_run.run_id,
         "archived_at_utc": (
             archived_run.archived_at_utc.isoformat().replace(
@@ -28,6 +29,7 @@ def archived_test_run_to_archive_dict(
             entry.key: entry.value for entry in archived_run.metadata
         },
         "analysis": sampling_analysis_to_archive_dict(
-            archived_run.analysis
+            archived_run.analysis,
+            schema_version,
         ),
     }

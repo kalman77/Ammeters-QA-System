@@ -9,7 +9,7 @@ from src.domain.models.archived_test_run import (
 )
 from src.domain.models.run_metadata_entry import RunMetadataEntry
 from src.infrastructure.persistence.archive_schema_version import (
-    ARCHIVE_SCHEMA_VERSION,
+    SUPPORTED_ARCHIVE_SCHEMA_VERSIONS,
 )
 from src.infrastructure.persistence.archive_documents_match import (
     archive_documents_match,
@@ -34,11 +34,11 @@ def archived_test_run_from_dict(data: object) -> ArchivedTestRun:
     schema_version = data["schema_version"]
     if type(schema_version) is not int:
         raise ValueError("archive schema_version must be an integer")
-    if schema_version != ARCHIVE_SCHEMA_VERSION:
+    if schema_version not in SUPPORTED_ARCHIVE_SCHEMA_VERSIONS:
         raise UnsupportedArchiveSchemaError(
             "Unsupported archive schema version "
-            f"{schema_version!r}; expected "
-            f"{ARCHIVE_SCHEMA_VERSION}"
+            f"{schema_version!r}; expected one of "
+            f"{', '.join(map(str, SUPPORTED_ARCHIVE_SCHEMA_VERSIONS))}"
         )
     metadata = data["metadata"]
     if not isinstance(metadata, Mapping):
@@ -54,14 +54,19 @@ def archived_test_run_from_dict(data: object) -> ArchivedTestRun:
             data["archived_at_utc"],
             "archived_at_utc",
         ),
-        analysis=sampling_analysis_from_dict(data["analysis"]),
+        analysis=sampling_analysis_from_dict(
+            data["analysis"],
+            schema_version,
+        ),
         metadata=tuple(
             RunMetadataEntry(key=key, value=value)
             for key, value in sorted(metadata.items())
         ),
     )
+    # Re-encoding at the stored version keeps older archives canonical instead
+    # of failing them against fields their schema never had.
     if not archive_documents_match(
-        archived_test_run_to_archive_dict(archived_run),
+        archived_test_run_to_archive_dict(archived_run, schema_version),
         dict(data),
     ):
         raise ValueError(

@@ -30,6 +30,9 @@ from src.application.use_cases.find_archived_test_runs import (
 from src.application.use_cases.resolve_archived_run_query import (
     resolve_archived_run_query,
 )
+from src.infrastructure.persistence.archive_schema_version import (
+    ARCHIVE_SCHEMA_VERSION,
+)
 from src.infrastructure.persistence.list_archived_test_runs import (
     list_archived_test_runs,
 )
@@ -322,8 +325,9 @@ class DefensiveArchiveLoadingTests(unittest.TestCase):
         document = archived_test_run_to_dict(build_archived_test_run())
         encoded = json.dumps(document)
         encoded = encoded.replace(
-            '"schema_version": 1',
-            '"schema_version": 999, "schema_version": 1',
+            f'"schema_version": {ARCHIVE_SCHEMA_VERSION}',
+            f'"schema_version": 999, "schema_version": '
+            f'{ARCHIVE_SCHEMA_VERSION}',
             1,
         )
         (self.archive_directory / f"{RUN_ID}.json").write_text(

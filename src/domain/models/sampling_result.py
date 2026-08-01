@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 
 from src.domain.enums.measurement_status import MeasurementStatus
 from src.domain.models.measurement_error import MeasurementError
+from src.domain.models.retry_policy import RetryPolicy
 from src.domain.models.sample_result import SampleResult
 from src.domain.models.sampling_settings import SamplingSettings
 
@@ -23,6 +24,7 @@ class SamplingResult:
     samples: Tuple[SampleResult, ...]
     errors: Tuple[MeasurementError, ...]
     unit: str
+    retry_policy: RetryPolicy = RetryPolicy()
 
     def __post_init__(self) -> None:
         if (
@@ -48,6 +50,8 @@ class SamplingResult:
             )
         if not isinstance(self.settings, SamplingSettings):
             raise ValueError("settings must be SamplingSettings")
+        if not isinstance(self.retry_policy, RetryPolicy):
+            raise ValueError("retry_policy must be RetryPolicy")
         if not isinstance(self.samples, tuple) or not all(
             isinstance(sample, SampleResult) for sample in self.samples
         ):
@@ -136,6 +140,10 @@ class SamplingResult:
             if sample.result.unit != self.unit:
                 raise ValueError(
                     "sample unit must match sampling result unit"
+                )
+            if sample.request_attempts > self.retry_policy.max_attempts:
+                raise ValueError(
+                    "sample attempts cannot exceed the retry policy"
                 )
 
         successful_samples = sum(

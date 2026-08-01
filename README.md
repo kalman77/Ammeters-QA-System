@@ -39,6 +39,10 @@ Python's standard-library `statistics` module, so it does not add NumPy, SciPy,
 pandas, or another runtime dependency. Phase 5 persistence likewise uses only
 standard-library UUID, JSON, temporary-file, and filesystem support.
 
+The optional [desktop console](#desktop-console) is the only part of the
+project that needs GUI dependencies (`PySide6` and `pyqtgraph`). Every
+library, CLI, and example path continues to work without them.
+
 ## Run the emulator smoke test
 
 From the project directory:
@@ -219,7 +223,9 @@ accumulate as schedule drift. Each slot occupies
 
 If an earlier request is slow and a later slot is at or beyond its end before
 it can start, that slot is recorded as a failed sample with
-`sampling_slot_missed`. No late catch-up request or retry is issued. A request
+`sampling_slot_missed`. No late catch-up request is issued, and a missed slot is
+never retried; [per-slot retries](#per-slot-retries) only re-issue a request
+inside a slot that is still live. A request
 that starts inside its slot still owns that slot even if it completes late.
 Consequently, every started run contains exactly `N` slot results while its
 duration remains bounded by the configured window plus completion of at most the
@@ -351,6 +357,60 @@ The visualization and performance-consistency items remain optional bonus work
 and are deliberately deferred. Unique run identifiers, metadata archives,
 historical retrieval, and result comparison belong to Phase 5 result management
 and are not part of this phase.
+
+## Per-slot retries
+
+By default the framework issues exactly one request per sampling slot. A
+configured retry policy lets a slot re-issue its request without weakening the
+fixed-deadline schedule:
+
+```yaml
+testing:
+  retry:
+    max_attempts: 3
+    retry_delay_seconds: 0.01
+```
+
+`max_attempts` counts the first request, so `1` (the default) means no retries.
+Both values are bounded: at most 10 attempts per slot and a 60-second backoff.
+A delay without more than one attempt is a configuration error rather than a
+silently ignored value.
+
+Per-call overrides work like the sampling overrides:
+
+```python
+analysis = framework.analyze(
+    "greenlee",
+    measurements_count=20,
+    sampling_frequency_hz=10.0,
+    max_attempts=3,
+    retry_delay_seconds=0.01,
+)
+```
+
+### Retries never move a deadline
+
+Every attempt, including its backoff, has to finish inside the slot's own
+half-open window `[i / F, (i + 1) / F)`. Before waiting, the policy checks
+whether the backoff would land at or past the slot end; if it would, the slot
+stops retrying instead of sleeping into the next deadline. A slot therefore
+still produces exactly one result, and slot `i + 1` keeps its original target.
+
+### What a retried slot records
+
+- A slot that succeeds on any attempt is `SUCCESS` with no errors. Its
+  `request_attempts` count is the evidence that retries were used.
+- A slot that exhausts its attempts is `FAILED` and reports the **last**
+  failure.
+- A missed slot issues no request at all and records `request_attempts: 0`.
+- `started_elapsed_seconds` is the first attempt's start and
+  `request_latency_seconds` belongs to the final attempt.
+- `SamplingResult` stores the policy it executed under, so an archived run
+  distinguishes "retries were allowed but unnecessary" from "retries were never
+  permitted".
+
+Serialized sampling results gain a `retry` block, a per-sample
+`request_attempts`, and a `summary.retried_samples` counter.
 
 ## Result management (Phase 5)
 
@@ -514,6 +574,65 @@ storage, historical retrieval, and descriptive comparison. Visualization,
 performance-consistency evaluation, and relative-accuracy or reliability
 ranking remain optional bonus work.
 
+## Desktop console
+
+`src/presentation/desktop/` is an optional PySide6 front end for the same
+public framework APIs. It is a presentation adapter: it drives
+`AmmeterTestFramework` and `AmmeterResultManager` and adds no domain,
+application, or infrastructure behaviour.
+
+```sh
+python -m pip install -r requirements.txt
+python desktop_app.py
+# or: python -m src.presentation.desktop --config config/config.yaml
+```
+
+### Pages
+
+| Page | Purpose |
+|---|---|
+| Run | Select ammeters, resolve a sampling window and retry budget, watch samples stream in live, and archive each analysis |
+| Results | Filter the archive, inspect statistics, samples, charts, and the raw archive document, and export JSON or CSV |
+| Compare | Choose one baseline plus candidates and read candidate-minus-baseline deltas as a table and a chart |
+
+Shortcuts: `Ctrl+1/2/3` navigate, `Ctrl+R` starts a run, `Esc` stops one,
+`F5` reloads the archive, and `Ctrl+F` focuses the results filter.
+
+### Live streaming and cancellation
+
+`AmmeterTestFramework` already accepts its client, clock, and sleeper ports as
+constructor arguments, so the desktop layer supplies decorated versions instead
+of changing the framework:
+
+- `LiveAmmeterClient` wraps `read_ammeter_current`, streams every request to the
+  UI as it completes, and optionally injects communication failures, invalid
+  readings, outliers, or extra latency at the transport boundary. Injected
+  failures reach the framework as ordinary `MeasurementRequestError` or
+  non-finite values, so the resulting statuses and statistics are produced by
+  the real Phase 3/4 policies.
+- `CancellableSleeper` slices scheduled waits and raises `RunCancelled` once a
+  stop is requested. The sampling use case shuts its emulators down in a
+  `finally` block, so a stopped run releases its sockets; the interrupted
+  window is discarded rather than archived, and already-completed ammeters keep
+  their analyses.
+
+Sampling runs on a `QThread` worker, and streamed samples are batched before
+crossing to the GUI thread so high frequencies stay responsive.
+
+### Retries in the console
+
+The Run page exposes attempts-per-slot and backoff, shows the slot window the
+retries have to fit inside, and counts recovered slots live. Progress tracks
+slots reached rather than requests issued, so a retried run still reports one
+unit of progress per slot. The Results page adds an `Attempts` column, a
+`RETRIED SLOTS` tile, and the archived policy in the statistics tab.
+
+### Window derivation
+
+The Run page collects the measurement count `N` and frequency `F` and lets the
+existing application resolver derive `D = N / F`, so the desktop controls
+cannot express a window that violates `N = D × F`.
+
 ## Configured protocols
 
 `config/config.yaml` is the runtime source of truth.
@@ -548,6 +667,12 @@ result_management:
   archive_directory: "../results"
 ```
 
+Archive documents are written at schema version 2, which adds the retry policy
+and per-slot attempt counts. Version-1 archives written before retries existed
+remain readable: they are re-encoded as version 1 when their canonical form is
+verified, so no stored file has to be rewritten. A version-1 document that
+contains retry fields is treated as corruption rather than silently upgraded.
+
 Relative archive paths are resolved from the directory containing the selected
 configuration file, not from the process working directory. The directory is
 created only when the first archive save is requested. Missing or invalid
@@ -562,8 +687,8 @@ requested, leaving all earlier APIs usable with legacy configuration files.
   module
 - `src/application/ports/`: dependency contracts used by application logic
 - `src/application/use_cases/`: selection, validation, measurement,
-  fixed-deadline sampling, analysis, archival, retrieval, query, and comparison
-  workflows
+  fixed-deadline sampling, bounded retries, analysis, archival, retrieval,
+  query, and comparison workflows
 - `src/application/errors/`: typed selector, configuration, operational, and
   result-management errors
 - `src/infrastructure/config/`: YAML loading and configuration resolution
@@ -579,6 +704,9 @@ requested, leaving all earlier APIs usable with legacy configuration files.
   archive-history, and historical-comparison tables
 - `src/presentation/serialization/`: JSON-friendly measurement, sampling, and
   analysis/archive/comparison serialization
+- `src/presentation/desktop/`: optional PySide6 console (theme, formatters,
+  view models, decorated ports, worker, charts, and pages)
+- `desktop_app.py`: convenience entry point for the desktop console
 - `Ammeters/`: existing emulator and socket infrastructure adapters
 - `config/config.yaml`: runtime, sampling, and result-management configuration
 - `src/testing/`: public `AmmeterTestFramework` facade and lazy result manager

@@ -4,6 +4,10 @@ from typing import Any, Dict
 from src.domain.enums.measurement_error_code import MeasurementErrorCode
 from src.domain.enums.measurement_status import MeasurementStatus
 from src.domain.models.sampling_result import SamplingResult
+from src.infrastructure.persistence.archive_schema_version import (
+    ARCHIVE_SCHEMA_VERSION,
+    RETRY_SCHEMA_VERSION,
+)
 from src.infrastructure.persistence.measurement_result_to_archive_dict import (
     measurement_result_to_archive_dict,
 )
@@ -11,8 +15,10 @@ from src.infrastructure.persistence.measurement_result_to_archive_dict import (
 
 def sampling_result_to_archive_dict(
     result: SamplingResult,
+    schema_version: int = ARCHIVE_SCHEMA_VERSION,
 ) -> Dict[str, Any]:
-    """Encode one sampling result using the archive-v1 schema."""
+    """Encode one sampling result using the requested archive schema."""
+    includes_retries = schema_version >= RETRY_SCHEMA_VERSION
     successful_samples = sum(
         sample.result.status is MeasurementStatus.SUCCESS
         for sample in result.samples
@@ -26,6 +32,11 @@ def sampling_result_to_archive_dict(
     )
     serialized_samples = []
     for sample in result.samples:
+        retry_fields = (
+            {"request_attempts": sample.request_attempts}
+            if includes_retries
+            else {}
+        )
         scheduled_at_utc = (
             result.sampling_started_at_utc
             + timedelta(seconds=sample.scheduled_elapsed_seconds)
@@ -65,9 +76,22 @@ def sampling_result_to_archive_dict(
                 "result": measurement_result_to_archive_dict(
                     sample.result
                 ),
+                **retry_fields,
             }
         )
 
+    retry_document = (
+        {
+            "retry": {
+                "max_attempts": result.retry_policy.max_attempts,
+                "retry_delay_seconds": (
+                    result.retry_policy.retry_delay_seconds
+                ),
+            }
+        }
+        if includes_retries
+        else {}
+    )
     return {
         "ammeter_type": result.ammeter_type,
         "status": result.status.value,
@@ -103,6 +127,7 @@ def sampling_result_to_archive_dict(
             ),
             "missed_samples": missed_samples,
         },
+        **retry_document,
         "samples": serialized_samples,
         "errors": [
             {

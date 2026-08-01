@@ -94,6 +94,7 @@ class SamplingPresentationTests(unittest.TestCase):
                 "successful_samples": 1,
                 "failed_samples": 0,
                 "missed_samples": 1,
+                "retried_samples": 0,
             },
         )
         self.assertEqual(

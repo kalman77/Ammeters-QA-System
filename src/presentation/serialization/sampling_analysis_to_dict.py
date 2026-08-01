@@ -17,6 +17,9 @@ def sampling_analysis_to_dict(
         sample.result.status is MeasurementStatus.SUCCESS
         for sample in sampling_result.samples
     )
+    retried_samples = sum(
+        sample.request_attempts > 1 for sample in sampling_result.samples
+    )
     missed_samples = sum(
         any(
             error.code is MeasurementErrorCode.SAMPLING_SLOT_MISSED
@@ -68,6 +71,7 @@ def sampling_analysis_to_dict(
             ),
             "failed_samples": failed_samples,
             "missed_samples": missed_samples,
+            "retried_samples": retried_samples,
         },
         "statistics": serialized_statistics,
         "sampling_result": sampling_result_to_dict(sampling_result),

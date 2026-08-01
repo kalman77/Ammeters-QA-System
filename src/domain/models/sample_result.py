@@ -5,6 +5,7 @@ from typing import Optional
 from src.domain.enums.measurement_error_code import MeasurementErrorCode
 from src.domain.enums.measurement_status import MeasurementStatus
 from src.domain.models.measurement_result import MeasurementResult
+from src.domain.models.retry_policy import MAX_ATTEMPTS_PER_SLOT
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class SampleResult:
     started_elapsed_seconds: Optional[float]
     completed_elapsed_seconds: float
     result: MeasurementResult
+    request_attempts: Optional[int] = None
 
     def __post_init__(self) -> None:
         if (
@@ -97,3 +99,31 @@ class SampleResult:
                 )
         elif missed_slot:
             raise ValueError("a missed sampling slot cannot have a start time")
+
+        # A missed slot issues no request at all; every started slot issues at
+        # least one. Omitting the count therefore has a single valid meaning.
+        if self.request_attempts is None:
+            object.__setattr__(
+                self,
+                "request_attempts",
+                0 if self.started_elapsed_seconds is None else 1,
+            )
+        if (
+            isinstance(self.request_attempts, bool)
+            or not isinstance(self.request_attempts, int)
+            or self.request_attempts < 0
+            or self.request_attempts > MAX_ATTEMPTS_PER_SLOT
+        ):
+            raise ValueError(
+                "request_attempts must be an integer between 0 and "
+                f"{MAX_ATTEMPTS_PER_SLOT}"
+            )
+        if self.started_elapsed_seconds is None:
+            if self.request_attempts != 0:
+                raise ValueError(
+                    "a missed sampling slot cannot have request attempts"
+                )
+        elif self.request_attempts < 1:
+            raise ValueError(
+                "a started sampling slot requires at least one attempt"
+            )

@@ -1,10 +1,15 @@
 from collections.abc import Mapping
 
 from src.domain.enums.measurement_status import MeasurementStatus
+from src.domain.models.retry_policy import RetryPolicy
 from src.domain.models.sampling_result import SamplingResult
 from src.domain.models.sampling_settings import (
     MAX_MEASUREMENTS_COUNT,
     SamplingSettings,
+)
+from src.infrastructure.persistence.archive_schema_version import (
+    ARCHIVE_SCHEMA_VERSION,
+    RETRY_SCHEMA_VERSION,
 )
 from src.infrastructure.persistence.measurement_error_from_dict import (
     measurement_error_from_dict,
@@ -17,10 +22,27 @@ from src.infrastructure.persistence.sample_result_from_dict import (
 )
 
 
-def sampling_result_from_dict(data: object) -> SamplingResult:
+def sampling_result_from_dict(
+    data: object,
+    schema_version: int = ARCHIVE_SCHEMA_VERSION,
+) -> SamplingResult:
     """Reconstruct one aggregate sampling result from archive data."""
     if not isinstance(data, Mapping):
         raise ValueError("sampling result must be a mapping")
+    if schema_version >= RETRY_SCHEMA_VERSION:
+        retry = data["retry"]
+        if not isinstance(retry, Mapping):
+            raise ValueError("sampling retry policy must be a mapping")
+        retry_policy = RetryPolicy(
+            max_attempts=retry["max_attempts"],
+            retry_delay_seconds=retry["retry_delay_seconds"],
+        )
+    else:
+        if "retry" in data:
+            raise ValueError(
+                "sampling retry policy is not part of this archive schema"
+            )
+        retry_policy = RetryPolicy()
     settings = data["settings"]
     samples = data["samples"]
     errors = data["errors"]
@@ -59,10 +81,12 @@ def sampling_result_from_dict(data: object) -> SamplingResult:
             sampling_frequency_hz=settings["sampling_frequency_hz"],
         ),
         samples=tuple(
-            sample_result_from_dict(sample) for sample in samples
+            sample_result_from_dict(sample, schema_version)
+            for sample in samples
         ),
         errors=tuple(
             measurement_error_from_dict(error) for error in errors
         ),
         unit=data["unit"],
+        retry_policy=retry_policy,
     )
