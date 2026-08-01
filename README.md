@@ -74,6 +74,87 @@ The callable `main.main()` also returns the measurements as:
 
 Values change on every run because the emulator inputs are random.
 
+## Unified test framework (Phase 2)
+
+`AmmeterTestFramework` is the public API for measuring one configured ammeter.
+The canonical `measure()` method returns an immutable `MeasurementResult`:
+
+```python
+from src.testing.test_framework import AmmeterTestFramework
+
+framework = AmmeterTestFramework()
+result = framework.measure("greenlee")
+
+print(result.ammeter_type)             # greenlee
+print(result.status.value)             # success, failed, or partial
+print(result.current, result.unit)     # for example: 0.42 A
+print(result.request_latency_seconds)
+print(result.errors)
+```
+
+Ammeter names are stripped and matched case-insensitively. The supported names
+are available through `framework.ammeter_types`. Use `measure_all()` to receive
+a `dict[str, MeasurementResult]` in configured execution order.
+
+`run_test()` preserves a dictionary-oriented API. It executes the same typed
+measurement and serializes the result into JSON-friendly values:
+
+```python
+result = framework.run_test("greenlee")
+```
+
+```python
+{
+    "ammeter_type": "greenlee",
+    "status": "success",
+    "timestamp_utc": "2026-08-01T09:30:00Z",
+    "elapsed_seconds": 0.012,
+    "current": 0.42,
+    "unit": "A",
+    "request_latency_seconds": 0.004,
+    "errors": [],
+}
+```
+
+`run_all_tests()` returns the same serialized shape for every configured
+ammeter.
+
+### Status and error semantics
+
+| Status | Measurement fields | Errors |
+|---|---|---|
+| `success` | `current` and request latency are present | Empty |
+| `failed` | `current` and request latency are `None` | One or more operational errors |
+| `partial` | A valid measurement is present | A later shutdown error is recorded |
+
+Operational failures are returned in `errors` with stable codes:
+`emulator_start_failed`, `measurement_request_failed`,
+`invalid_measurement`, and `emulator_stop_failed`. Invalid selectors and
+configuration are caller errors rather than measurement outcomes:
+
+- `FrameworkConfigurationError` means the YAML could not be loaded or resolved.
+- `InvalidAmmeterTypeError` means the selector was not a non-empty string.
+- `UnsupportedAmmeterError` means the normalized name is not configured.
+
+### Run the example
+
+From the project root, invoke the example as a module so project imports resolve
+consistently:
+
+```sh
+python -m examples.run_tests
+```
+
+The example calls `measure_all()` and prints the typed results, including status,
+latency, and structured error details.
+
+### Sampling scope
+
+Phase 2 performs exactly one measurement request for each selected ammeter.
+The `testing.sampling` placeholders in `config/config.yaml` are intentionally
+not consumed yet. Measurement count, total duration, sampling frequency, and
+precise sampling schedules are deferred explicitly to Phase 3.
+
 ## Configured protocols
 
 `config/config.yaml` is the runtime source of truth.
@@ -91,17 +172,23 @@ system choose a free port.
 ## Project structure
 
 - `main.py`: thin public entry point and CLI exception boundary
-- `src/domain/models/`: immutable settings, one dataclass per module
+- `src/domain/models/`: immutable settings and typed measurement results, one
+  dataclass per module
 - `src/application/ports/`: dependency contracts used by application logic
-- `src/application/use_cases/`: framework-independent workflows
+- `src/application/use_cases/`: selection, validation, and measurement workflows
+- `src/application/errors/`: typed selector, configuration, and operational
+  errors
 - `src/infrastructure/config/`: YAML loading and configuration resolution
 - `src/infrastructure/emulators/`: registry and lifecycle adapters, one
   operation per module
+- `src/infrastructure/clients/`: measurement transport adapters
+- `src/infrastructure/time/`: UTC and monotonic clock adapters
 - `src/bootstrap/`: dependency composition
-- `src/presentation/console/`: console output formatting
+- `src/presentation/console/`: smoke-test and typed-result table formatting
+- `src/presentation/serialization/`: JSON-friendly result serialization
 - `Ammeters/`: existing emulator and socket infrastructure adapters
 - `config/config.yaml`: runtime and future test-framework configuration
-- `src/testing/`: Phase 2 test-framework implementation area
+- `src/testing/`: public `AmmeterTestFramework` facade
 - `examples/`: framework usage examples
 - `tests/`: behavioral and architecture regression tests
 
@@ -124,12 +211,23 @@ decisions.
 - Added cooperative server shutdown, bounded thread joins, ephemeral-port
   support, and socket-address reuse for reliable repeated runs.
 - Corrected the incomplete framework module's missing type import and the
-  example's `run_test` call signature. Sampling remains Phase 2 work.
+  example's original `run_test` call signature.
 - Refactored the Phase 1 implementation into domain, application,
   infrastructure, bootstrap, and presentation layers. `main.py` now delegates
   to the bootstrap layer instead of owning configuration and thread lifecycle.
 
-## Run Phase 1 tests
+## Phase 2 additions
+
+- Added a unified, typed single-ammeter measurement API.
+- Added immutable measurements, result envelopes, statuses, and structured
+  error details.
+- Added JSON-friendly `run_test()` and `run_all_tests()` compatibility APIs.
+- Added validated selector handling, UTC timestamps, elapsed time, and request
+  latency.
+- Added typed-result console presentation and a runnable module example.
+- Kept sampling mechanics deferred to Phase 3.
+
+## Run tests
 
 ```sh
 python -m unittest discover -s tests -v
