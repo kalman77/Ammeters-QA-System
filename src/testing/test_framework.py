@@ -12,6 +12,9 @@ from src.application.ports.emulator_stopper import EmulatorStopper
 from src.application.ports.monotonic_clock import MonotonicClock
 from src.application.ports.sleeper import Sleeper
 from src.application.ports.utc_clock import UtcClock
+from src.application.use_cases.analyze_sampling_result import (
+    analyze_sampling_result,
+)
 from src.application.use_cases.run_ammeter_sampling_test import (
     run_ammeter_sampling_test,
 )
@@ -19,6 +22,7 @@ from src.application.use_cases.run_single_ammeter_test import (
     run_single_ammeter_test,
 )
 from src.domain.models.measurement_result import MeasurementResult
+from src.domain.models.sampling_analysis import SamplingAnalysis
 from src.domain.models.sampling_result import SamplingResult
 from src.domain.models.sampling_settings import SamplingSettings
 from src.infrastructure.clients.read_ammeter_current import (
@@ -41,6 +45,9 @@ from src.infrastructure.time.read_utc_time import read_utc_time
 from src.infrastructure.time.sleep_for_seconds import sleep_for_seconds
 from src.presentation.serialization.measurement_result_to_dict import (
     measurement_result_to_dict,
+)
+from src.presentation.serialization.sampling_analysis_to_dict import (
+    sampling_analysis_to_dict,
 )
 from src.presentation.serialization.sampling_result_to_dict import (
     sampling_result_to_dict,
@@ -234,4 +241,74 @@ class AmmeterTestFramework:
         return {
             ammeter_type: sampling_result_to_dict(result)
             for ammeter_type, result in results.items()
+        }
+
+    def analyze(
+        self,
+        ammeter_type: object,
+        *,
+        measurements_count: Optional[object] = None,
+        total_duration_seconds: Optional[object] = None,
+        sampling_frequency_hz: Optional[object] = None,
+    ) -> SamplingAnalysis:
+        """Sample one ammeter once and return its statistical analysis."""
+        sampling_result = self.sample(
+            ammeter_type,
+            measurements_count=measurements_count,
+            total_duration_seconds=total_duration_seconds,
+            sampling_frequency_hz=sampling_frequency_hz,
+        )
+        return analyze_sampling_result(sampling_result)
+
+    def analyze_all(
+        self,
+        *,
+        measurements_count: Optional[object] = None,
+        total_duration_seconds: Optional[object] = None,
+        sampling_frequency_hz: Optional[object] = None,
+    ) -> Dict[str, SamplingAnalysis]:
+        """Sample and statistically analyze every configured ammeter."""
+        sampling_results = self.sample_all(
+            measurements_count=measurements_count,
+            total_duration_seconds=total_duration_seconds,
+            sampling_frequency_hz=sampling_frequency_hz,
+        )
+        return {
+            ammeter_type: analyze_sampling_result(result)
+            for ammeter_type, result in sampling_results.items()
+        }
+
+    def run_analysis(
+        self,
+        ammeter_type: object,
+        *,
+        measurements_count: Optional[object] = None,
+        total_duration_seconds: Optional[object] = None,
+        sampling_frequency_hz: Optional[object] = None,
+    ) -> Dict[str, Any]:
+        """Sample, analyze, and serialize one configured ammeter."""
+        analysis = self.analyze(
+            ammeter_type,
+            measurements_count=measurements_count,
+            total_duration_seconds=total_duration_seconds,
+            sampling_frequency_hz=sampling_frequency_hz,
+        )
+        return sampling_analysis_to_dict(analysis)
+
+    def run_all_analyses(
+        self,
+        *,
+        measurements_count: Optional[object] = None,
+        total_duration_seconds: Optional[object] = None,
+        sampling_frequency_hz: Optional[object] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Sample, analyze, and serialize every configured ammeter."""
+        analyses = self.analyze_all(
+            measurements_count=measurements_count,
+            total_duration_seconds=total_duration_seconds,
+            sampling_frequency_hz=sampling_frequency_hz,
+        )
+        return {
+            ammeter_type: sampling_analysis_to_dict(analysis)
+            for ammeter_type, analysis in analyses.items()
         }
