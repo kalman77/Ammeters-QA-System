@@ -1,9 +1,7 @@
-import yaml
-from typing import Dict
+"""Compatibility import for the pre-refactor configuration API."""
 
-def load_config(config_path: str) -> Dict:
-    """
-    טעינת קובץ הקונפיגורציה
-    """
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
+from src.infrastructure.config.load_yaml_config import (
+    load_yaml_config as load_config,
+)
+
+__all__ = ["load_config"]
